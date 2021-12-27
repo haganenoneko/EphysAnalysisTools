@@ -12,7 +12,7 @@ import pandas as pd
 
 from abc import ABC, abstractmethod
 
-from dataclasses import dataclass
+from pydantic import BaseModel, ValidationError, validator
 
 from typing import Dict, Any, List, Union
 import numpy.typing as npt 
@@ -23,10 +23,11 @@ NDArrayFloat = npt.NDArray[np.float64]
 
 FloatOrArray = Union[float, NDArrayFloat]
 
+KwDict = Dict[str, Any]
+
 # ------------------------------- Base classes ------------------------------- #
 
-@dataclass
-class Recording:
+class Recording(BaseModel):
     """Base class to hold data for individual recordings"""
     raw_data: pd.DataFrame
     name: str 
@@ -34,12 +35,10 @@ class Recording:
     epoch_intervals: Dict[int, List[int]]
     attrs: Dict[str, Any]
 
-@dataclass
 class Recording_Leak(Recording):
     """Recordings that contain leak ramp steps"""
     ramp_startend: List[int]
     
-@dataclass 
 class Recording_Leak_MemTest(Recording_Leak):
     """Recordings that contain leak ramp and membrane test steps"""
     mt_startend: List[int]
@@ -50,6 +49,10 @@ class AbstractAnalyzer(ABC):
     @abstractmethod
     def __init__(self, data: Recording, show: bool
     ) -> None:
+        pass 
+    
+    @abstractmethod 
+    def run(self):
         pass 
     
     @abstractmethod

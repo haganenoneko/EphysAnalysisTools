@@ -28,16 +28,20 @@ import matplotlib.pyplot as plt
 
 from typing import List, Dict, Any, Tuple, Union
 
-from GeneralProcess.base import NDArrayFloat, exp1
+from GeneralProcess.base import NDArrayFloat, KwDict, exp1
 from GeneralProcess.base import AbstractAnalyzer, Recording_Leak_MemTest
 
+from pydantic import BaseModel, ValidationError, validator
+
 # ---------------------------------------------------------------------------- #
+
+
 class VoltageClampQuality(AbstractAnalyzer):
     """
     Inspect the effectiveness of voltage clamp by computing the ratio 
     between the actual membrane potential ($V_{out}$) and the command 
     voltage ($V_{in}$). See Ref. 1 in the module header.
-    
+
     The corner frequency is also called the "-3dB cutoff frequency," 
     which is the frequency at which the output gain is reduced to 
     79.71% of its maximum value. See Refs. 4 and 5 in the module header 
@@ -56,8 +60,9 @@ class VoltageClampQuality(AbstractAnalyzer):
         ].values.tolist()
 
         self._getFreqsAndVolageRatios(test_freqs)
-        
-        if show: self.plot_results(**kwargs)
+
+        if show:
+            self.plot_results(**kwargs)
 
     @staticmethod
     def _convertUnits(
@@ -148,10 +153,10 @@ class VoltageClampQuality(AbstractAnalyzer):
         )
 
     def plot_results(
-        self, plot_kw: Dict[str, Any] = {'lw': 2},
-        fig_kw: Dict[str, Any] = {'figsize': (9, 4)},
-        corner_kw: Dict[str, Any] = {'ls': '--', 'lw': 2},
-        axes_kw: Dict[str, Any] = {
+        self, plot_kw: KwDict = {'lw': 2},
+        fig_kw: KwDict = {'figsize': (9, 4)},
+        corner_kw: KwDict = {'ls': '--', 'lw': 2},
+        axes_kw: KwDict = {
             'xscale': 'log',
             'ylabel': dict(fontsize=20, rotation=0, labelpad=22),
             'grid': dict(b=True, which='both', axis='both', alpha=0.3),
@@ -160,13 +165,13 @@ class VoltageClampQuality(AbstractAnalyzer):
         """Plot a `V_out`/`V_in` vs. frequency (Hz) graph and indicate the corner frequency, given seal parameters in `self.__data`
 
         :param plot_kw: appearance of arbitrary frequencies, defaults to {'lw' : 2}
-        :type plot_kw: Dict[str, Any], optional
+        :type plot_kw: KwDict, optional
         :param fig_kw: appearance of the Figure, defaults to {'figsize' : (9, 4)}
-        :type fig_kw: Dict[str, Any], optional
+        :type fig_kw: KwDict, optional
         :param corner_kw: appearance of line indicating the corner frequency, defaults to {'ls' : '--', 'lw' : 2}
-        :type corner_kw: Dict[str, Any], optional
+        :type corner_kw: KwDict, optional
         :param axes_kw: additional axes properties, defaults to { 'xscale' : 'log', 'ylabel' : dict(fontsize=20, rotation=0, labelpad=22), 'grid' : dict(b=True, which='both', axis='both', alpha=0.3), }
-        :type axes_kw: Dict[str, Any], optional
+        :type axes_kw: KwDict, optional
         """
 
         freqs, V_ratios, f_corner, corner_ratio = self.__results.values()
@@ -179,11 +184,11 @@ class VoltageClampQuality(AbstractAnalyzer):
         Cm, Rm, Rsr = self._convertUnits(*self.__params, to_SI=False)
 
         label = [f"$f_c$ = {f_corner:.1f} kHz",
-                r"$V_{{out}}/V_{{in}}$ = {.3f}".format(corner_ratio),
-                f"$R_m$ = {Rm:d} M$\Omega$",
-                f"$C_m$ = {Cm:.1f} pF",
-                f"$R_s$ = {Rsr:.1f} M$\Omega$"
-                ]
+                 r"$V_{{out}}/V_{{in}}$ = {.3f}".format(corner_ratio),
+                 f"$R_m$ = {Rm:d} M$\Omega$",
+                 f"$C_m$ = {Cm:.1f} pF",
+                 f"$R_s$ = {Rsr:.1f} M$\Omega$"
+                 ]
         label = "\n".join(label)
 
         # plot corner ratio as a vertical line
@@ -209,43 +214,28 @@ class VoltageClampQuality(AbstractAnalyzer):
             print(f"{key} is an invalid key. \
                 Available keys:\n{self.__results.keys()}")
 
-class VoltageClampEstim(AbstractAnalyzer):
+# -------------------------- Membrane test analyses -------------------------- #
+
+
+class EstimateRampCm(BaseModel):
     """
-    Estimate $C_m$, $R_m$, and $R_{sr}$ from recording parameters 
-    using two methods:
-    
-    1. `SWH` and `SW Harden` refer to Scott W. Harden. This method 
-    estimates membrane capacitance $C_m$ from the current response to
-    two symmetric symmetric voltage ramps. See Ref. 3 in the main 
-    header for more information.
-    
-    2. `MDC` and `Molecular Devices` refer to algorithms implemented
-    in pClamp/Axoscope software (Molecular Devices, LLC., San Jose, CA).
-    The implementation here follows the description in Ref. 6.
+    Estimate membrane capacitance ($C_m$) from symmetric voltage ramps. 
+    See Ref. 3 in the module header for more info.
     """
+    khz: int
+    ramp_startend: List[int]
+    ramp_centerFrac: float
 
-    def __init__(self, data: Recording_Leak_MemTest, 
-                 show: bool, **kwargs) -> None:
+    @validator('ramp_centerFrac')
+    def centerFrac_in_zero_one(cls: object, val: float) -> float:
+        if 0 < val <= 1:
+            return val
+        raise ValueError(f"`centerFrac` must be in (0, 1], not {val}.")
 
-        self.__data = data
-        self.__khz = data.attrs['khz']
+    def _Cm_from_ramp(self, ramp: pd.DataFrame, thalf: int) -> float:
 
-        self.params_SWH = []  # SW Harden methods
-        self.params_MDC = []  # MDC methods
-        self.MDC_Rm_err = []  # check correspondence between tau and Rm using tau ~ Rm*Cm
-
-        if show:
-            self.plot_results(**kwargs)
-
-    @staticmethod
-    def _compute_Cm_from_ramp(
-        ramp: pd.DataFrame, thalf: float, centerFrac: float, khz: float
-    ) -> float:
-
-        try:
-            assert 0 < centerFrac <= 1
-        except AssertionError:
-            raise AssertionError(f"`centerFrac` must be in (0, 1], not {centerFrac}.")
+        khz = self.khz
+        cf = self.ramp_centerFrac
 
         # split the ramp current into separate arms
         ramp1 = ramp.iloc[:thalf, 0].values[::-1]
@@ -253,8 +243,8 @@ class VoltageClampEstim(AbstractAnalyzer):
 
         # figure out the middle of the data we wish to sample from
         centerPoint = int(len(ramp1))/2
-        centerLeft = int(centerPoint*(1-centerFrac))
-        centerRight = int(centerPoint*(1+centerFrac))
+        centerLeft = int(centerPoint*(1 - cf))
+        centerRight = int(centerPoint*(1 + cf))
 
         ramp_duration = ramp.shape[0]/(2*khz)
 
@@ -273,24 +263,17 @@ class VoltageClampEstim(AbstractAnalyzer):
 
         return np.abs(deviation / ramp_slope_ms)
 
-    def _estimate_SWH_Cm(self, startend: List[int], df: pd.DataFrame,
-                       centerFrac: float) -> List[float]:
+    def get_ramp_Cm(self, df: pd.DataFrame) -> pd.DataFrame:
         """Use `SW Harden`'s method to estimate membrane capcitance ($C_m$) 
         from symmetric voltage ramps (see Ref. 3 in the module header)
 
         :param startend: indices of `df` for the start and end of symmetric voltage rampps
         :type startend: List[int]
-        :param df: dataframe with current and corresponding voltage command in columns 1:N and N:2N, respectively
-        :type df: pd.DataFrame
-        :param khz: sampling rate, in kHz
-        :type khz: int
-        :param centerFrac: fractional timespan to draw data from in the center of each ramp (refer to the reference for more information)
-        :type centerFrac: float
         :return: estimated membrane capacitance
         :rtype: List[float]
         """
-
-        ramp = df.iloc[startend[0]:startend[1], :]
+        ta, tb = self.ramp_startend
+        ramp = df.iloc[ta:tb, :]
         N = int(ramp.shape[1]/2)
 
         # ramp midpoint
@@ -299,13 +282,135 @@ class VoltageClampEstim(AbstractAnalyzer):
         cm_vals = []
         for i in range(N):
             ramp_i = ramp.iloc[:, [i, N+i]]
-            
-            cm_i = self._compute_Cm_from_ramp(
-                ramp_i, thalf, centerFrac, self.__khz)
-            
+            cm_i = self._Cm_from_ramp(ramp_i, thalf)
             cm_vals.append(cm_i)
 
-        return cm_vals
+        return pd.Series(cm_vals, name='Ramp_Cm')
+
+
+def MemTest_SWH(dV_max: float, tau: float, I_d: float, I_dss: float) -> List[float]:
+    """
+    Compute seal parameters using SW Harden's formulae
+
+    At time zero, access resistance limits our ability to deliver current `Id` to a known `dV` (`Cm` doesn't come into play yet). Thus, 
+    $$ R_a = \Delta V_{max} / I_d $$
+
+    the difference between this steady state current (Iss) and the last one (`Iprev`) is limited by the sum of `Rm` and `Ra`
+    $$ R_m + R_a = \Delta V_{max} / (I_{ss} - I_0) $$
+    $$ R_m = (\Delta V_{max} - R_a * (I_{ss} - I_0) ) / (I_{ss} - I_0) $$
+
+    When we raise the cell's voltage (`Vm`) by delivering current through the pipette (Ra), some current escapes through `Rm`. From the cell's perspective when we charge it though, `Ra` and `Rm` are in parallel.
+
+    $$ C_m = \tau / R_T $$
+    $$ 1/R_T = 1/R_a + 1/R_m $$
+
+    `Rm` leaks a small amount of the `Id` current that passes through Ra to charge `Cm`. We can calculate a correction factor as the ratio of `Ra` to `Rm` and multiply it by both of our resistances. `Cm` can be corrected by dividing it by the square of this ratio.
+
+    :param dV_max: maximum voltage drop
+    :type dV_max: float
+    :param tau: single-exponential time constant fitted to the decay of the membrane test current from its peak
+    :type tau: float
+    :param I_d: difference between peak membrane test current and baseline current
+    :type I_d: float
+    :param I_dss: difference between steady-state membrane test current and baseline current 
+    :type I_dss: float
+    :return: [`tau`, `R_a`, `R_m`, `C_m`]
+    :rtype: List[float]
+    """
+    R_a = abs(dV_max/I_d)*1e3
+    R_m = abs((dV_max*1e-3 - R_a*I_dss*1e-6)/(I_dss*1e-12))*1e-6
+    C_m = abs(tau / (1 / (1/R_a) + (1/R_m))) * 1e3
+
+    if R_m >= 10*R_a:
+        correction = 1 + (R_a / R_m)
+
+        R_a *= correction
+        R_m *= correction
+        C_m *= 1/(correction**2)
+
+    return [tau, R_a, R_m, C_m]
+
+
+def MemTest_MDC(
+    I_t: NDArrayFloat, times: NDArrayFloat, dV_max: float,
+    tau: float, I_ss: float, I_dss: float
+) -> Tuple[List[float], float]:
+    """
+    Compute seal parameters using Molecular Devices' (MDC) formulae, and estimate the error by comparing the fitted time constant `tau` to that estimated by `Cm * R_t2`, where `R_t2` is the sum of access (`R_a`) and membrane resistances (`R_m`). See Ref. 6 in the module header for more information.
+
+    :param I_t: membrane test current
+    :type I_t: NDArrayFloat
+    :param times: measurement times
+    :type times: NDArrayFloat
+    :param dV_max: maximum voltage drop
+    :type dV_max: float
+    :param tau: single-exponential time constant fitted to the decay of the membrane test current from its peak
+    :type tau: float
+    :param I_ss: steady state current at the end of the membrane test step
+    :type I_ss: float
+    :param I_dss: difference between `I_ss` and baseline current 
+    :type I_dss: float
+    :return: [`R_a`, `R_m`, `C_m`], deviation in `tau`
+    :rtype: Tuple[List[float], float]
+    """
+
+    # C_m = Q /dV, where Q is obtained by integrating the capacitive transient
+    Q = simps([x - I_ss for x in I_t], times) + I_dss*tau
+    Cm = abs(Q/dV_max)
+
+    # from Molecular Devices (MDC)
+    # tau = R * Cm, 1/R = 1/Rm + 1/Ra = (Ra + Rm)/(Ra * Rm)
+    # tau/Cm = (Ra*Rm) / (Ra + Rm)
+    # Ra^2 - Ra*Rt + Rt*(tau/Cm) = 0, R_t = Ra + Rm
+    R_t = abs((dV_max/I_dss)*1e3)
+    quad_factors = [1, -R_t, R_t*(tau/Cm)*1e3]
+
+    R_a = np.min(np.real(np.roots(quad_factors)))
+    R_m = R_t - R_a
+
+    # conductance
+    g_t2 = (1/R_a) + (1/R_m)
+
+    MDC_Rm_error = Cm/g_t2 - tau*1e3
+
+    params_MDC = [R_a, R_m, Cm]
+
+    return params_MDC, MDC_Rm_error
+
+
+class VoltageClampEstim(AbstractAnalyzer):
+    """
+    Estimate $C_m$, $R_m$, and $R_{sr}$ from recording parameters 
+    using two methods:
+
+    1. `MemTest_SWH`
+    `SWH` and `SW Harden` refer to Scott W. Harden. This method 
+    estimates membrane capacitance $C_m$ from the current response to
+    two symmetric symmetric voltage ramps. See Ref. 3 in the main 
+    header for more information.
+
+    2. `MemTest_MDC`
+    `MDC` and `Molecular Devices` refer to algorithms implemented
+    in pClamp/Axoscope software (Molecular Devices, LLC., San Jose, CA).
+    The implementation here follows the description in Ref. 6.
+    """
+
+    def __init__(self, data: Recording_Leak_MemTest,
+                 memtest_kw: KwDict = {}, centerFrac: float = 0.3,
+                 show=False, memtest_plot_kw: KwDict = {},
+                 ramp_cm_plot_kw: KwDict = {}) -> None:
+
+        self.__data = data
+        self.__khz = data.attrs['khz']
+
+        self.params_SWH = []  # SW Harden methods
+        self.params_MDC = []  # MDC methods
+        self.MDC_Rm_err = []  # check correspondence between tau and Rm using tau ~ Rm*Cm
+
+        results = self.run(memtest_kw, centerFrac)
+        if show:
+            self.plot_results(*results, memtest_plot_kw=memtest_plot_kw,
+                              ramp_cm_plot_kw=ramp_cm_plot_kw)
 
     @staticmethod
     def _fitMemTestExp1(
@@ -332,51 +437,6 @@ class VoltageClampEstim(AbstractAnalyzer):
 
         popt, _ = curve_fit(exp1, times, I_t, p0=p0, bounds=(lowers, uppers))
         return popt
-
-    @staticmethod
-    def _SWH_memTest(dV_max: float, tau: float, I_d: float, I_dss: float) -> List[float]:
-        """Compute seal parameters using SW Harden's formulae
-
-        At time zero, access resistance limits our ability to deliver current `Id` to a known `dV` (`Cm` doesn't come into play yet). Thus, 
-        $$ R_a = \Delta V_{max} / I_d $$
-
-        the difference between this steady state current (Iss) and the last one (`Iprev`) is limited by the sum of `Rm` and `Ra`
-        $$ R_m + R_a = \Delta V_{max} / (I_{ss} - I_0) $$
-        $$ R_m = (\Delta V_{max} - R_a * (I_{ss} - I_0) ) / (I_{ss} - I_0) $$
-
-        When we raise the cell's voltage (`Vm`) by delivering current through the pipette (Ra), some current escapes through `Rm`. From the cell's perspective when we charge it though, `Ra` and `Rm` are in parallel.
-
-        $$ C_m = \tau / R_T $$
-        $$ 1/R_T = 1/R_a + 1/R_m $$
-
-        `Rm` leaks a small amount of the `Id` current that passes through Ra to charge `Cm`. We can calculate a correction factor as the ratio of `Ra` to `Rm` and multiply it by both of our resistances. `Cm` can be corrected by dividing it by the square of this ratio.
-
-        :param dV_max: maximum voltage drop
-        :type dV_max: float
-        :param tau: single-exponential time constant fitted to the decay of the membrane test current from its peak
-        :type tau: float
-        :param I_d: difference between peak membrane test current and baseline current
-        :type I_d: float
-        :param I_dss: difference between steady-state membrane test current and baseline current 
-        :type I_dss: float
-        :return: [`tau`, `R_a`, `R_m`, `C_m`]
-        :rtype: List[float]
-        """
-        R_a = abs(dV_max/I_d)*1e3
-        R_m = abs((dV_max*1e-3 - R_a*I_dss*1e-6)/(I_dss*1e-12))*1e-6
-        C_m = abs(tau / (1 / (1/R_a) + (1/R_m))) * 1e3
-
-        params = [tau, R_a, R_m, C_m]
-
-        if R_m < 10*R_a:
-            return params
-
-        correction = 1 + (R_a / R_m)
-
-        R_a *= correction
-        R_m *= correction
-        C_m *= 1/(correction**2)
-        return params
 
     def _truncateMemTestCapacitance(
         df: NDArrayFloat, time: NDArrayFloat
@@ -416,99 +476,50 @@ class VoltageClampEstim(AbstractAnalyzer):
         dI = np.max(I_t) - np.min(I_t)
         return dI, dV
 
-    @staticmethod
-    def _computeMDCParams(
-        I_t: NDArrayFloat, times: NDArrayFloat, dV_max: float,
-        tau: float, I_ss: float, I_dss: float
-    ) -> Tuple[List[float], float]:
-        """Compute seal parameters using Molecular Devices' (MDC) formulae, and estimate the error by comparing the fitted time constant `tau` to that estimated by `Cm * R_t2`, where `R_t2` is the sum of access (`R_a`) and membrane resistances (`R_m`)
-
-        :param I_t: membrane test current
-        :type I_t: NDArrayFloat
-        :param times: measurement times
-        :type times: NDArrayFloat
-        :param dV_max: maximum voltage drop
-        :type dV_max: float
-        :param tau: single-exponential time constant fitted to the decay of the membrane test current from its peak
-        :type tau: float
-        :param I_ss: steady state current at the end of the membrane test step
-        :type I_ss: float
-        :param I_dss: difference between `I_ss` and baseline current 
-        :type I_dss: float
-        :return: [`R_a`, `R_m`, `C_m`], deviation in `tau`
-        :rtype: Tuple[List[float], float]
-        """
-
-        # C_m = Q /dV, where Q is obtained by integrating the capacitive transient
-        Q = simps([x - I_ss for x in I_t], times) + I_dss*tau
-        Cm = abs(Q/dV_max)
-
-        # from Molecular Devices (MDC)
-        # tau = R * Cm, 1/R = 1/Rm + 1/Ra = (Ra + Rm)/(Ra * Rm)
-        # tau/Cm = (Ra*Rm) / (Ra + Rm)
-        # Ra^2 - Ra*Rt + Rt*(tau/Cm) = 0, R_t = Ra + Rm
-        R_t = abs((dV_max/I_dss)*1e3)
-        quad_factors = [1, -R_t, R_t*(tau/Cm)*1e3]
-
-        R_a = np.min(np.real(np.roots(quad_factors)))
-        R_m = R_t - R_a
-
-        # conductance
-        g_t2 = (1/R_a) + (1/R_m)
-
-        MDC_Rm_error = Cm/g_t2 - tau*1e3
-
-        params_MDC = [R_a, R_m, Cm]
-
-        return params_MDC, MDC_Rm_error
-
-    def _compute_memTest(
+    def _oneSidedMemTest(
         self, df: pd.DataFrame, times: NDArrayFloat, I_t: NDArrayFloat,
         ind: int, fifth: int, **fit_kwargs
     ) -> None:
-        """
-        Fit single exponential to membrane test transients and compute membrane test parameters
-        """
-                
+        """Estimate membrane test parameters for one side of the membrane test step"""
         # discard capacitance spike
         times, I_t = self._truncateMemTestCapacitance(times, I_t)
 
         I_base = self._getBaseCurrent(df, ind, fifth, self.__khz)
         dI_max, dV_max = self._getMaxVoltageDrop(df, ind, fifth)
         p0 = [dI_max, 10, np.mean(I_t[-fifth:])]
-        
-        dI_max, tau, I_ss = self._fitMemTestExp1(times, I_t, p0=p0, **fit_kwargs)
+
+        dI_max, tau, I_ss = self._fitMemTestExp1(
+            times, I_t, p0=p0, **fit_kwargs)
 
         I_peak = I_ss + dI_max
         I_d = I_peak - I_base
         I_dss = I_ss - I_base
 
-        mdc, mdc_err = self._computeMDCParams(
-            I_t, times, dV_max, tau, I_ss, I_dss)
-        
+        mdc, mdc_err = MemTest_MDC(I_t, times, dV_max, tau, I_ss, I_dss)
         self.params_MDC.append(mdc)
         self.MDC_Rm_err.append(mdc_err)
 
         self.params_SWH.append(
-            self._SWH_memTest(dV_max, tau, I_d, I_dss)
+            MemTest_SWH(dV_max, tau, I_d, I_dss)
         )
-            
 
-    def averageMemTestParams(self, N: int) -> None:
+    def averageMemTestParams(self) -> Tuple[pd.DataFrame]:
         """Take average of start and end capacitive transients"""
-        params_SWH = []
-        params_MDC = []
 
-        for i in range(0, 2*N, 2):
-            params_SWH.append(np.mean(self.params_SWH[i: i + 2]))
-            params_MDC.append(np.mean(self.params_MDC[i: i + 2]))
+        def _get_avg_df(params: List[List[float]], cols: List[str]) -> pd.DataFrame:
+            A = np.array(params)
+            A = 0.5 * (A[::2] + A[1::2])
+            return pd.DataFrame(A, columns=cols)
 
-        self.params_SWH = params_SWH
-        self.params_MDC = params_MDC
+        cols = ['tau', 'R_a', 'R_m', 'C_m']
+        mdc = _get_avg_df(self.params_MDC, cols)
+        swh = _get_avg_df(self.params_SWH, cols)
+
+        return mdc, swh
 
     def estimate_memTest(
-        self, startend: List[int], df: pd.DataFrame, **fit_kwargs
-    ) -> None:
+        self, startend: List[int], **fit_kwargs
+    ) -> Tuple[pd.DataFrame]:
         """Using the method described by SW Harden and pClamp, estimate Ra, Rm, and Cm by fitting a single exponential to the capacitive transient of a membrane test step.
 
         :param startend: indices for the start and end of membrane test step in `df`
@@ -518,53 +529,76 @@ class VoltageClampEstim(AbstractAnalyzer):
         :param khz: sampling rate, in Khz
         :type khz: int, optional
         """
+        df = self.__data.raw_data
         N = int(df.shape[1]/2)
 
         # estimate parameters for starting and ending capacitive transients
         for i in range(len(startend)-1):
-            
-            # isolate membrane test step 
+
+            # isolate membrane test step
             ta, tb = startend[i:i+2]
             df_MT = df.iloc[ta:tb, :].copy()
             df_MT.index -= df_MT.index[0]
-            
+
             # fifth of the interval used for I_ss calculations
             fifth = int(df_MT.shape[0]/5)
             times = df_MT.index.values.tolist()
-            
+
             # invert transient if mean of first 20ms is less than last 20ms
             mu = df_MT.iloc[:, :N].mean(axis=0).values
             if mu[0] < mu[-1]:
                 df_MT.iloc[:, :N] *= -1
-            
+
             for j in range(N):
                 I_t = df_MT.iloc[:, j].values
-                self._compute_memTest(df, times, I_t, ta, fifth, **fit_kwargs)
+                self._oneSidedMemTest(df, times, I_t, ta, fifth, **fit_kwargs)
 
         # average parameters
-        self.averageMemTestParams(N)
+        return self.averageMemTestParams()
 
-    def plot_results(
-        self, fig_kw: Dict[str, Any] = {'figsize': (12, 6)},
-        swh_kw: Dict[str, Any] = dict(marker='o', c='r', alpha=0.7, label="SWH"),
-        mdc_kw: Dict[str, Any] = dict(
-            marker='x', ms=8, c='white', alpha=0.7, label="MDC")
+    def estimate_RampCm(self, centerFrac: float) -> List[float]:
+        """Estimate membrane capacitance $C_m$ from symmetric voltage ramps"""
+
+        data = self.__data
+
+        if 'ramp_startend' not in data.attrs:
+            raise ValueError(f"{data.name} does not have start and\
+                end indices for symmetric (leak) voltage ramps")
+
+        try:
+            cm_estim = EstimateRampCm(
+                self.__khz, data.ramp_startend, centerFrac)
+        except ValidationError as e:
+            raise(e)
+
+        return cm_estim.get_ramp_Cm(data.raw_data)
+
+    def run(self, mt_kw: KwDict, centerFrac: float) -> Tuple[pd.DataFrame]:
+
+        data = self.__data
+        self.params_MDC, self.params_SWH = self.estimate_memTest(
+            data.mt_startend, **mt_kw)
+
+        self.__ramp_cm = self.estimate_RampCm(centerFrac)
+        return self.params_MDC, self.params_SWH, self.__ramp_cm
+
+    def plot_MemTest(
+        self, mt_mdc: pd.DataFrame, mt_swh: pd.DataFrame,
+        fig_kw: KwDict = {'figsize': (12, 6)},
+        swh_kw: KwDict = dict(marker='o', c='r', alpha=0.7, label="SWH"),
+        mdc_kw: KwDict = dict(
+            marker='x', ms=8, c='k', alpha=0.7, label="MDC")
     ) -> None:
 
         fig, axs = plt.subplots(2, 2, **fig_kw)
         labels = [r"$\tau$ (ms)", r"$R_a$ (M$\Omega$)",
                   r"$R_m$ (M$\Omega$)", r"$C_m$ (pF)"]
 
-        params_SWH = self.params_SWH
-        params_MDC = self.params_MDC
-
-        sweeps = range(1, max(map(len, params_SWH)))
-
         for i, ax in np.nditer(axs):
-            ax.plot(sweeps, [x[i] for x in params_SWH], **swh_kw)
+            ax.plot(mt_swh.iloc[:, i], **swh_kw)
 
             if i > 0:
-                ax.plot(sweeps, [x[i-1] for x in params_MDC], **mdc_kw)
+                ax.plot(mt_mdc.iloc[:, i-1], **mdc_kw)
 
             ax.legend()
             ax.set_title(labels[i])
@@ -575,6 +609,39 @@ class VoltageClampEstim(AbstractAnalyzer):
         fig.suptitle("Estimation of Membrane Test Parameters")
         fig.tight_layout(rect=[0, 0.03, 1, 0.95])
         super().save_pdf(fig)
+
+    def plot_RampCm(
+        self, ramp_cm: pd.DataFrame,
+        fig_kw: KwDict = {'figsize': (7, 4)},
+        plot_kw: KwDict = {'marker': 'o', 'c': 'b', 'label': r'Ramp $C_m$'}
+    ) -> None:
+        """Plot $C_m$ values estimated from symmetric voltage ramps"""
+
+        fig, ax = plt.subplots(**fig_kw)
+        ax.set_ylabel("$C_m$ (pF)")
+        ax.set_xlabel("Sweep #")
+
+        x = list(range(1, ramp_cm.shape[1] + 1))
+        ax.plot(ramp_cm, **plot_kw)
+
+        fig.suptitle("Estimation of $C_m$ from Symmetric Voltage Ramps")
+        fig.tight_layout()
+        super().save_pdf(fig)
+
+    def plot_results(
+        self, mt_mdc: pd.DataFrame, mt_swh: pd.DataFrame, ramp_cm: pd.DataFrame,
+        memtest_plot_kw: Dict[str, dict],  ramp_cm_plot_kw: Dict[str, Union[float, dict]]
+    ) -> None:
+
+        self.plot_MemTest(mt_mdc, mt_swh, **memtest_plot_kw)
+        self.plot_RampCm(ramp_cm, **ramp_cm_plot_kw)
+
+    def __repr__(self) -> str:
+
+        return f"""
+        Analysis of voltage clamp quality for {self.__data.name}\n
+        
+        """
 
     def extract_data(self, key: str) -> Any:
         if key not in self.__dict__ and\
