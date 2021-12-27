@@ -25,7 +25,7 @@ contains simple constraints on how the data may be transformed. These constraint
 import numpy as np 
 import pandas as pd
 
-from typing import List, Union, Tuple
+from typing import List, Tuple
 
 from abc import ABC, abstractmethod
 
@@ -36,10 +36,7 @@ from GeneralProcess.base import NDArrayFloat
 class AbstractSpecificTransform(ABC):
     
     @abstractmethod
-    def __init__(
-        self, df: pd.DataFrame, fname: str, 
-        times: Union[List[int], NDArrayFloat]
-    ) -> None:
+    def __init__(self, df: pd.DataFrame) -> None:
         pass 
     
     @staticmethod
@@ -56,22 +53,18 @@ class TransformError(ValueError):
 
 class ConstrainedSpecificTransform(AbstractSpecificTransform):
     
-    def __init__(self, df: pd.DataFrame, fname: str, 
-                times: Union[List[int], NDArrayFloat],
+    def __init__(self, df: pd.DataFrame, 
                 voltage_range: Tuple[int, int]=(-200, 100)) -> None:
         
         self._df = df 
-        self._fname = fname 
-        self._times = times 
-        
         self._voltage_range = voltage_range
         
-    def validateVoltageRange(self, df: pd.DataFrame) -> bool:
+    def validateVoltageRange(self, transformed: pd.DataFrame) -> bool:
         """Ensure that all voltages are in `self._voltage_range`"""
         
         vlims = self._voltage_range
-        v_min = df.min(axis=0) 
-        v_max = df.max(axis=0)
+        v_min = transformed.min(axis=0) 
+        v_max = transformed.max(axis=0)
         
         try:
             assert (v_min.copy() > vlims[0]).all()
@@ -117,22 +110,31 @@ class ConstrainedSpecificTransform(AbstractSpecificTransform):
             
         def get_nrows(df: pd.DataFrame, col: int) -> int:
             return df.iloc[:, col].dropna().shape[0]
-            
-        n_0 = get_nrows(transformed, 0)
-        for i in range(1, transformed.shape[1]):
-            n_i = get_nrows(transformed, i)
-            if n_i == n_0: continue 
-            
-            data = f"First column: {n_0}\t{i}-th column: {n_i}"
-            
-            raise TransformError(
-                "Equal number of non-NaN elements in each column.",
-                data
-            )
         
+        n_0 = get_nrows(transformed, 0)
+        for i in range(transformed.shape[1]):
+            n_i = get_nrows(transformed, i)
+
+            if n_i != n_0:
+                data = f"First column: {n_0}\t{i}-th column: {n_i}"
+            
+                raise TransformError(
+                    "Equal number of non-NaN elements in each column.",
+                    data
+                )
+        return True 
+            
+    def validate(self, transformed: pd.DataFrame) -> bool:
+        self.validateVoltageRange(transformed)
+        self.validateColumns(transformed)
+        self.validateRows(transformed)
         return True 
     
-    
+    def static_transform(self):
+        """Add `self.validate(..)` to your output if you implement this subclass"""
+        return 
+        
+# -------------------------- Implemented transforms -------------------------- #
         
 def file_specific_transform(
     fname: str, times: List[int]=None, df: pd.DataFrame=None
