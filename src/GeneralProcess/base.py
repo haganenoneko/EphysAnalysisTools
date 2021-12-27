@@ -26,19 +26,29 @@ FloatOrArray = Union[float, NDArrayFloat]
 # ------------------------------- Base classes ------------------------------- #
 
 @dataclass
-class AbstractRecording:
+class Recording:
+    """Base class to hold data for individual recordings"""
     raw_data: pd.DataFrame
     name: str 
     params: pd.Series
-    ramp_startend: List[int]
     epoch_intervals: Dict[int, List[int]]
     attrs: Dict[str, Any]
+
+@dataclass
+class Recording_Leak(Recording):
+    """Recordings that contain leak ramp steps"""
+    ramp_startend: List[int]
     
-    """Base class to hold data for individual recordings"""
+@dataclass 
+class Recording_Leak_MemTest(Recording_Leak):
+    """Recordings that contain leak ramp and membrane test steps"""
+    mt_startend: List[int]
+
+# ---------------------------------------------------------------------------- #
 
 class AbstractAnalyzer(ABC):
     @abstractmethod
-    def __init__(self, data: AbstractRecording, show: bool
+    def __init__(self, data: Recording, show: bool
     ) -> None:
         pass 
     

@@ -18,7 +18,7 @@ from GeneralProcess.ephys_info_filter import EphysInfoFiltering
 # ---------------------------------------------------------------------------- #
 
 class BaseProcessor:
-    
+    """Select and find CSV and ABF files"""
     def __init__(
         self, main_dir: str, csv_path: str, abf_path: str,
         filter_criteria: Dict[str, Any]
@@ -28,9 +28,9 @@ class BaseProcessor:
             raise ValueError(f"No filter criteria provided.")
         
         self._criteria = filter_criteria 
-        self._readFilterCriteria()
+        self.readFilterCriteria()
         
-    def _readFilterCriteria(self) -> None:
+    def readFilterCriteria(self) -> None:
         ephysInfo = EphysInfoFiltering(self._criteria)
         filenames, ephys_info = ephysInfo.filter()
         paired_files, exp_params = ephysInfo.ExpParams(ephys_info)
@@ -41,7 +41,7 @@ class BaseProcessor:
         self._pairedFiles = paired_files
         
     @staticmethod 
-    def _readCSVFile(file: str, filename: str) -> pd.DataFrame:
+    def readCSVFile(file: str, filename: str) -> pd.DataFrame:
         df = pd.read_csv(file, header=None, index_col=0)
 
         # check if first index is not 0
@@ -56,7 +56,7 @@ class BaseProcessor:
                 
         return file_specific_transform(filename, df=df)
 
-    def _readCSVFiles(self, csv_path: str) -> List[int]:
+    def readCSVFiles(self, csv_path: str) -> List[int]:
         """Load csv files containing corresponding data"""
         
         files = [f"{csv_path}{f}.csv" for f in self._filenames]
@@ -83,7 +83,7 @@ class BaseProcessor:
         self._data_csv_files = data_files 
         return to_remove
     
-    def _removeMissingCSVFiles(self, to_remove: List[str]) -> None:
+    def removeMissingCSVFiles(self, to_remove: List[str]) -> None:
         """Remove file not found from dataframes of recording parameters"""
         
         if not to_remove: return 
@@ -102,7 +102,7 @@ class BaseProcessor:
         self._ephysInfo = ephysInfo
         self._expParams = expParams
     
-    def _findABFFiles(self, abf_path):
+    def findABFFiles(self, abf_path):
         # path to raw abf files
         abf_path = r"C:/Users/delbe/Downloads/wut/wut/Post_grad/UBC/Research/lab/data_files/delbert/" 
 
@@ -119,7 +119,7 @@ class BaseProcessor:
             exit()
 
 
-def __init__(self,
+def _init__(self,
     filter_criteria={},
     show_protocols=True,
     files_to_skip=[],
