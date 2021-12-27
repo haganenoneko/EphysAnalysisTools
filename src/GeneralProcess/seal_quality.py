@@ -328,7 +328,7 @@ def MemTest_SWH(dV_max: float, tau: float, I_d: float, I_dss: float) -> List[flo
         R_m *= correction
         C_m *= 1/(correction**2)
 
-    return [tau, R_a, R_m, C_m]
+    return [R_a, R_m, C_m]
 
 
 def MemTest_MDC(
@@ -371,11 +371,11 @@ def MemTest_MDC(
     # conductance
     g_t2 = (1/R_a) + (1/R_m)
 
-    MDC_Rm_error = Cm/g_t2 - tau*1e3
+    MDC_dtau = Cm/g_t2 - tau*1e3
 
     params_MDC = [R_a, R_m, Cm]
 
-    return params_MDC, MDC_Rm_error
+    return params_MDC, MDC_dtau
 
 
 class VoltageClampEstim(AbstractAnalyzer):
@@ -402,14 +402,15 @@ class VoltageClampEstim(AbstractAnalyzer):
 
         self.__data = data
         self.__khz = data.attrs['khz']
+        
+        self.params_SWH = []  # SW Harden methods = R_a, R_m, C_m 
+        self.params_MDC = []  # MDC methods = R_a, R_m, C_m
+        self.MDC_dtau =   []  # check correspondence between tau and Rm using tau ~ Rm*Cm
 
-        self.params_SWH = []  # SW Harden methods
-        self.params_MDC = []  # MDC methods
-        self.MDC_Rm_err = []  # check correspondence between tau and Rm using tau ~ Rm*Cm
-
-        results = self.run(memtest_kw, centerFrac)
+        self.run(memtest_kw, centerFrac)
+        
         if show:
-            self.plot_results(*results, memtest_plot_kw=memtest_plot_kw,
+            self.plot_results(memtest_plot_kw=memtest_plot_kw,
                               ramp_cm_plot_kw=ramp_cm_plot_kw)
 
     @staticmethod
@@ -497,7 +498,7 @@ class VoltageClampEstim(AbstractAnalyzer):
 
         mdc, mdc_err = MemTest_MDC(I_t, times, dV_max, tau, I_ss, I_dss)
         self.params_MDC.append(mdc)
-        self.MDC_Rm_err.append(mdc_err)
+        self.MDC_dtau.append([tau, mdc_err])
 
         self.params_SWH.append(
             MemTest_SWH(dV_max, tau, I_d, I_dss)
@@ -506,16 +507,17 @@ class VoltageClampEstim(AbstractAnalyzer):
     def averageMemTestParams(self) -> Tuple[pd.DataFrame]:
         """Take average of start and end capacitive transients"""
 
-        def _get_avg_df(params: List[List[float]], cols: List[str]) -> pd.DataFrame:
+        cols = ['tau', 'R_a', 'R_m', 'C_m']
+        def _get_avg_df(params: List[List[float]]) -> pd.DataFrame:
             A = np.array(params)
             A = 0.5 * (A[::2] + A[1::2])
             return pd.DataFrame(A, columns=cols)
-
-        cols = ['tau', 'R_a', 'R_m', 'C_m']
-        mdc = _get_avg_df(self.params_MDC, cols)
-        swh = _get_avg_df(self.params_SWH, cols)
-
-        return mdc, swh
+            
+        mdc = _get_avg_df(self.params_MDC)
+        swh = _get_avg_df(self.params_SWH)
+        dtau = _get_avg_df(self.MDC_dtau)
+                
+        return mdc, swh, dtau 
 
     def estimate_memTest(
         self, startend: List[int], **fit_kwargs
@@ -552,7 +554,7 @@ class VoltageClampEstim(AbstractAnalyzer):
             for j in range(N):
                 I_t = df_MT.iloc[:, j].values
                 self._oneSidedMemTest(df, times, I_t, ta, fifth, **fit_kwargs)
-
+        
         # average parameters
         return self.averageMemTestParams()
 
@@ -573,32 +575,41 @@ class VoltageClampEstim(AbstractAnalyzer):
 
         return cm_estim.get_ramp_Cm(data.raw_data)
 
-    def run(self, mt_kw: KwDict, centerFrac: float) -> Tuple[pd.DataFrame]:
+    def run(self, mt_kw: KwDict, centerFrac: float) -> None:
 
         data = self.__data
         self.params_MDC, self.params_SWH = self.estimate_memTest(
             data.mt_startend, **mt_kw)
 
         self.__ramp_cm = self.estimate_RampCm(centerFrac)
-        return self.params_MDC, self.params_SWH, self.__ramp_cm
+        return 
 
     def plot_MemTest(
-        self, mt_mdc: pd.DataFrame, mt_swh: pd.DataFrame,
-        fig_kw: KwDict = {'figsize': (12, 6)},
+        self, fig_kw: KwDict = {'figsize': (12, 6)},
         swh_kw: KwDict = dict(marker='o', c='r', alpha=0.7, label="SWH"),
-        mdc_kw: KwDict = dict(
-            marker='x', ms=8, c='k', alpha=0.7, label="MDC")
+        mdc_kw: KwDict = dict(marker='x', ms=8, c='k', alpha=0.7, label="MDC")
     ) -> None:
 
-        fig, axs = plt.subplots(2, 2, **fig_kw)
-        labels = [r"$\tau$ (ms)", r"$R_a$ (M$\Omega$)",
-                  r"$R_m$ (M$\Omega$)", r"$C_m$ (pF)"]
+        # mt_mdc: pd.DataFrame, mt_swh: pd.DataFrame,
+        mt_mdc = self.params_MDC
+        mt_swh = self.params_SWH
+        dtau = self.MDC_dtau
+        
+        fig, axs = plt.subplots(2, 3, **fig_kw)
+        labels = [r"$R_a$ (M$\Omega$)", r"$R_m$ (M$\Omega$)", r"$C_m$ (pF)",
+                  r"$\tau$ (ms)", r"$\tau - R_m C_m$"]
 
         for i, ax in np.nditer(axs):
+            
+            if i == mt_swh.shape[1]: 
+                ax.plot(dtau.iloc[:,0], marker='o', label=labels[i])
+                ax2 = ax.twinx()
+                ax2.plot(dtau.iloc[:,1], marker='x', label=labels[i+1])
+                ax.legend()
+                break 
+            
             ax.plot(mt_swh.iloc[:, i], **swh_kw)
-
-            if i > 0:
-                ax.plot(mt_mdc.iloc[:, i-1], **mdc_kw)
+            ax.plot(mt_mdc.iloc[:, i], **mdc_kw)
 
             ax.legend()
             ax.set_title(labels[i])
@@ -611,17 +622,17 @@ class VoltageClampEstim(AbstractAnalyzer):
         super().save_pdf(fig)
 
     def plot_RampCm(
-        self, ramp_cm: pd.DataFrame,
-        fig_kw: KwDict = {'figsize': (7, 4)},
+        self, fig_kw: KwDict = {'figsize': (7, 4)},
         plot_kw: KwDict = {'marker': 'o', 'c': 'b', 'label': r'Ramp $C_m$'}
     ) -> None:
         """Plot $C_m$ values estimated from symmetric voltage ramps"""
+
+        ramp_cm = self.__ramp_cm
 
         fig, ax = plt.subplots(**fig_kw)
         ax.set_ylabel("$C_m$ (pF)")
         ax.set_xlabel("Sweep #")
 
-        x = list(range(1, ramp_cm.shape[1] + 1))
         ax.plot(ramp_cm, **plot_kw)
 
         fig.suptitle("Estimation of $C_m$ from Symmetric Voltage Ramps")
@@ -629,18 +640,21 @@ class VoltageClampEstim(AbstractAnalyzer):
         super().save_pdf(fig)
 
     def plot_results(
-        self, mt_mdc: pd.DataFrame, mt_swh: pd.DataFrame, ramp_cm: pd.DataFrame,
-        memtest_plot_kw: Dict[str, dict],  ramp_cm_plot_kw: Dict[str, Union[float, dict]]
+        self, memtest_plot_kw: Dict[str, dict],  ramp_cm_plot_kw: Dict[str, Union[float, dict]]
     ) -> None:
 
-        self.plot_MemTest(mt_mdc, mt_swh, **memtest_plot_kw)
-        self.plot_RampCm(ramp_cm, **ramp_cm_plot_kw)
+        self.plot_MemTest(**memtest_plot_kw)
+        self.plot_RampCm(**ramp_cm_plot_kw)
 
     def __repr__(self) -> str:
 
         return f"""
         Analysis of voltage clamp quality for {self.__data.name}\n
-        
+        Membrane Test Analysis (S.W. Harden's method):\n{self.params_SWH}\n
+        Membrane Test Analysis (Molecular Devices' method):\n{self.params_MDC}\n
+        \t `tau - Rm*Cm`:\n{self.MDC_dtau}\n
+        Membrane capacitance estimation from voltage ramps (S.W. Harden's method):\n
+        {self.__ramp_cm}\n
         """
 
     def extract_data(self, key: str) -> Any:
