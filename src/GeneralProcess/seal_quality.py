@@ -49,19 +49,18 @@ class VoltageClampQuality(AbstractAnalyzer):
         test_freqs: List[float] = [1e-1, 1e4, 400], **kwargs
     ) -> None:
 
-        self._data = data
-        self._pdf = data.attrs['pdf']
+        self.__data = data
 
-        self.params = data.params.loc[
+        self.__params = data.params.loc[
             ['C_m (pF)', 'R_m (M)', 'R_sr (M)']
         ].values.tolist()
 
-        self.getFreqsAndVolageRatios(test_freqs)
-        if show:
-            self.plot_results(**kwargs)
+        self._getFreqsAndVolageRatios(test_freqs)
+        
+        if show: self.plot_results(**kwargs)
 
     @staticmethod
-    def convertUnits(
+    def _convertUnits(
         Cm: float, Rm: float, Rsr: float, to_SI=True
     ) -> List[float]:
         """Convert parameter units to SI if `to_SI=True`, else the reverse."""
@@ -72,7 +71,7 @@ class VoltageClampQuality(AbstractAnalyzer):
             return [Cm * 1e12, Rm * 1e-6, Rsr * 1e-6]
 
     @staticmethod
-    def transformFrequencies(
+    def _transformFrequencies(
         freqs: NDArrayFloat, Cm: float, Rm: float, Rsr: float
     ) -> NDArrayFloat:
         """Compute the ratio of actual voltage and command voltage (aka `V_out` and `V_in`, respectively) for frequencies `freqs`
@@ -100,7 +99,7 @@ class VoltageClampQuality(AbstractAnalyzer):
         return np.real((A * B) ** -0.5)
 
     @staticmethod
-    def computeCornerFreq(Cm: float, Rm: float, Rsr: float) -> float:
+    def _computeCornerFreq(Cm: float, Rm: float, Rsr: float) -> float:
         """
         Compute corner frequency of voltage clamp filter 
         (MHz if Rsr in MOhm and Cm in pF)
@@ -109,7 +108,7 @@ class VoltageClampQuality(AbstractAnalyzer):
             (Rm**2 - 2*Rm*Rsr - Rsr**2)**0.5 / (2*math.pi*Cm*Rm*Rsr)
         )
 
-    def computeVoltageRatios(
+    def _computeVoltageRatios(
         self, freqs: List[float]
     ) -> Tuple[NDArrayFloat, NDArrayFloat, float, float]:
         """compute Vout/Vin for ratios given frequencies
@@ -120,45 +119,45 @@ class VoltageClampQuality(AbstractAnalyzer):
         :rtype: NDArrayFloat
         """
         # parameters in SI units
-        params_SI = self.convertUnits(*self.params, to_SI=True)
+        params_SI = self._convertUnits(*self.__params, to_SI=True)
 
         # arbitrary frequencies
         freqs = np.geomspace(*freqs)
-        V_ratios = self.transformFrequencies(freqs, *params_SI)
+        V_ratios = self._transformFrequencies(freqs, *params_SI)
 
         # corner frequency
-        f_corner = self.computeCornerFreq(*params_SI)
-        corner_ratio = self.transformFrequencies(f_corner, *params_SI)
+        f_corner = self._computeVoltageRatios(*params_SI)
+        corner_ratio = self._transformFrequencies(f_corner, *params_SI)
 
         return freqs, V_ratios, f_corner, corner_ratio
 
-    def getFreqsAndVolageRatios(self, freqs: List[float]) -> None:
+    def _getFreqsAndVolageRatios(self, freqs: List[float]) -> None:
         """Compute and store frequencies and voltage ratios
 
         :param freqs: minimum, maximum, and number of frequencies to evaluate
         :type freqs: List[float], optional
         """
-        freqs, V_ratios, f_corner, corner_ratio = self.computeVoltageRatios(
+        freqs, V_ratios, f_corner, corner_ratio = self._computeVoltageRatios(
             freqs)
 
-        self._results = dict(
+        self.__results = dict(
             test_freqs=freqs,
             test_ratios=V_ratios,
             f_corner=f_corner,
             corner_ratio=corner_ratio
         )
 
-    def plot_results(self,
-                     plot_kw: Dict[str, Any] = {'lw': 2},
-                     fig_kw: Dict[str, Any] = {'figsize': (9, 4)},
-                     corner_kw: Dict[str, Any] = {'ls': '--', 'lw': 2},
-                     axes_kw: Dict[str, Any] = {
+    def plot_results(
+        self, plot_kw: Dict[str, Any] = {'lw': 2},
+        fig_kw: Dict[str, Any] = {'figsize': (9, 4)},
+        corner_kw: Dict[str, Any] = {'ls': '--', 'lw': 2},
+        axes_kw: Dict[str, Any] = {
             'xscale': 'log',
             'ylabel': dict(fontsize=20, rotation=0, labelpad=22),
             'grid': dict(b=True, which='both', axis='both', alpha=0.3),
-                         }
-                     ) -> None:
-        """Plot a `V_out`/`V_in` vs. frequency (Hz) graph and indicate the corner frequency, given seal parameters in `self._data`
+        }
+    ) -> None:
+        """Plot a `V_out`/`V_in` vs. frequency (Hz) graph and indicate the corner frequency, given seal parameters in `self.__data`
 
         :param plot_kw: appearance of arbitrary frequencies, defaults to {'lw' : 2}
         :type plot_kw: Dict[str, Any], optional
@@ -170,29 +169,28 @@ class VoltageClampQuality(AbstractAnalyzer):
         :type axes_kw: Dict[str, Any], optional
         """
 
-        freqs, V_ratios, f_corner, corner_ratio = self._results.values()
+        freqs, V_ratios, f_corner, corner_ratio = self.__results.values()
 
         fig, ax = plt.subplots(**fig_kw)
         ax.plot(freqs, V_ratios, **plot_kw)
 
         # frequency and seal parameters in operational units
         f_corner = np.real(f_corner)/1e3
-        Cm, Rm, Rsr = self.
-        convertUnits(*self.params, to_SI=False)
+        Cm, Rm, Rsr = self._convertUnits(*self.__params, to_SI=False)
 
         label = [f"$f_c$ = {f_corner:.1f} kHz",
-                 r"$V_{{out}}/V_{{in}}$ = {.3f}".format(corner_ratio),
-                 f"$R_m$ = {Rm:d} M$\Omega$",
-                 f"$C_m$ = {Cm:.1f} pF",
-                 f"$R_s$ = {Rsr:.1f} M$\Omega$"
-                 ]
+                r"$V_{{out}}/V_{{in}}$ = {.3f}".format(corner_ratio),
+                f"$R_m$ = {Rm:d} M$\Omega$",
+                f"$C_m$ = {Cm:.1f} pF",
+                f"$R_s$ = {Rsr:.1f} M$\Omega$"
+                ]
         label = "\n".join(label)
 
         # plot corner ratio as a vertical line
         ax.axvline(f_corner, label="\n".join(label), **corner_kw)
         ax.legend(loc='lower left')
 
-        ax.set_title(self._data.name)
+        ax.set_title(self.__data.name)
         ax.set_xlabel("Frequency (Hz)")
         ax.set_ylabel(r"$\mathbf{\frac{V_{out}}{V_{in}}}$",)
 
@@ -204,12 +202,12 @@ class VoltageClampQuality(AbstractAnalyzer):
     def extract_data(self, key: str) -> Union[List[Any], Any]:
 
         if key is None:
-            return list(self._results.values())
-        elif key in self._results:
-            return self._results[key]
+            return list(self.__results.values())
+        elif key in self.__results:
+            return self.__results[key]
         else:
             print(f"{key} is an invalid key. \
-                Available keys:\n{self._results.keys()}")
+                Available keys:\n{self.__results.keys()}")
 
 class VoltageClampEstim(AbstractAnalyzer):
     """
@@ -229,9 +227,8 @@ class VoltageClampEstim(AbstractAnalyzer):
     def __init__(self, data: Recording_Leak_MemTest, 
                  show: bool, **kwargs) -> None:
 
-        self._data = data
-        self._pdf = data.attrs['pdf']
-        self._khz = data.attrs['khz']
+        self.__data = data
+        self.__khz = data.attrs['khz']
 
         self.params_SWH = []  # SW Harden methods
         self.params_MDC = []  # MDC methods
@@ -241,11 +238,14 @@ class VoltageClampEstim(AbstractAnalyzer):
             self.plot_results(**kwargs)
 
     @staticmethod
-    def compute_SWH_Cm(
+    def _compute_Cm_from_ramp(
         ramp: pd.DataFrame, thalf: float, centerFrac: float, khz: float
     ) -> float:
 
-        assert 0 < centerFrac <= 1
+        try:
+            assert 0 < centerFrac <= 1
+        except AssertionError:
+            raise AssertionError(f"`centerFrac` must be in (0, 1], not {centerFrac}.")
 
         # split the ramp current into separate arms
         ramp1 = ramp.iloc[:thalf, 0].values[::-1]
@@ -273,7 +273,7 @@ class VoltageClampEstim(AbstractAnalyzer):
 
         return np.abs(deviation / ramp_slope_ms)
 
-    def SWH_EstimateCm(self, startend: List[int], df: pd.DataFrame,
+    def _estimate_SWH_Cm(self, startend: List[int], df: pd.DataFrame,
                        centerFrac: float) -> List[float]:
         """Use `SW Harden`'s method to estimate membrane capcitance ($C_m$) 
         from symmetric voltage ramps (see Ref. 3 in the module header)
@@ -299,13 +299,16 @@ class VoltageClampEstim(AbstractAnalyzer):
         cm_vals = []
         for i in range(N):
             ramp_i = ramp.iloc[:, [i, N+i]]
-            cm_i = self._compute_SWH_Cm(ramp_i, thalf, centerFrac, self._khz)
+            
+            cm_i = self._compute_Cm_from_ramp(
+                ramp_i, thalf, centerFrac, self.__khz)
+            
             cm_vals.append(cm_i)
 
         return cm_vals
 
     @staticmethod
-    def fitMemTestExp1(
+    def _fitMemTestExp1(
         times: NDArrayFloat, I_t: NDArrayFloat,
         p0: List[float], lowers: List[float], uppers: List[float]
     ) -> List[float]:
@@ -331,7 +334,7 @@ class VoltageClampEstim(AbstractAnalyzer):
         return popt
 
     @staticmethod
-    def swh_memTest(dV_max: float, tau: float, I_d: float, I_dss: float) -> List[float]:
+    def _SWH_memTest(dV_max: float, tau: float, I_d: float, I_dss: float) -> List[float]:
         """Compute seal parameters using SW Harden's formulae
 
         At time zero, access resistance limits our ability to deliver current `Id` to a known `dV` (`Cm` doesn't come into play yet). Thus, 
@@ -375,7 +378,7 @@ class VoltageClampEstim(AbstractAnalyzer):
         C_m *= 1/(correction**2)
         return params
 
-    def truncateMemTestCapacitance(
+    def _truncateMemTestCapacitance(
         df: NDArrayFloat, time: NDArrayFloat
     ) -> Tuple[NDArrayFloat, NDArrayFloat]:
         """Truncate capacitance peak (current maximum) from membrane test step
@@ -398,14 +401,14 @@ class VoltageClampEstim(AbstractAnalyzer):
         return times, df
 
     @staticmethod
-    def getBaseCurrent(df: pd.DataFrame, t: int, fifth: int, khz: int) -> float:
+    def _getBaseCurrent(df: pd.DataFrame, t: int, fifth: int, khz: int) -> float:
         """current just before the membrane test step"""
         a = t - fifth - 10*khz
         b = t - 10*khz
         return df.iloc[a:b, 0].mean()
 
     @staticmethod
-    def getMaxima(
+    def _getMaxVoltageDrop(
         I_t: NDArrayFloat, df: pd.DataFrame, t: int, fifth: int
     ) -> Tuple[float, float]:
         """Find maximal current and voltage drop"""
@@ -414,7 +417,7 @@ class VoltageClampEstim(AbstractAnalyzer):
         return dI, dV
 
     @staticmethod
-    def computeMDCParams(
+    def _computeMDCParams(
         I_t: NDArrayFloat, times: NDArrayFloat, dV_max: float,
         tau: float, I_ss: float, I_dss: float
     ) -> Tuple[List[float], float]:
@@ -459,23 +462,22 @@ class VoltageClampEstim(AbstractAnalyzer):
 
         return params_MDC, MDC_Rm_error
 
-    def memTest(
-        self, I_t: NDArrayFloat, times: NDArrayFloat,
-        df: pd.DataFrame, t: int, fifth: int, p0: List[float] = None,
-        lowers: List[float] = None, uppers: List[float] = None
+    def _compute_memTest(
+        self, df: pd.DataFrame, times: NDArrayFloat, I_t: NDArrayFloat,
+        ind: int, fifth: int, **fit_kwargs
     ) -> None:
-
+        """
+        Fit single exponential to membrane test transients and compute membrane test parameters
+        """
+                
         # discard capacitance spike
         times, I_t = self._truncateMemTestCapacitance(times, I_t)
 
-        I_base = self._getBaseCurrent(df, t, fifth, self._khz)
-        dI_max, dV_max = self._getMaxVoltageDrop(df, t, fifth)
-
-        if p0 is None:
-            p0 = [dI_max, 10, np.mean(I_t[-fifth:])]
-
-        dI_max, tau, I_ss = self._fitMemTestExp1(times, I_t, p0=p0,
-                                                 lowers=lowers, uppers=uppers)
+        I_base = self._getBaseCurrent(df, ind, fifth, self.__khz)
+        dI_max, dV_max = self._getMaxVoltageDrop(df, ind, fifth)
+        p0 = [dI_max, 10, np.mean(I_t[-fifth:])]
+        
+        dI_max, tau, I_ss = self._fitMemTestExp1(times, I_t, p0=p0, **fit_kwargs)
 
         I_peak = I_ss + dI_max
         I_d = I_peak - I_base
@@ -483,12 +485,14 @@ class VoltageClampEstim(AbstractAnalyzer):
 
         mdc, mdc_err = self._computeMDCParams(
             I_t, times, dV_max, tau, I_ss, I_dss)
+        
         self.params_MDC.append(mdc)
         self.MDC_Rm_err.append(mdc_err)
 
         self.params_SWH.append(
-            self._swh_memTest(dV_max, tau, I_d, I_dss)
+            self._SWH_memTest(dV_max, tau, I_d, I_dss)
         )
+            
 
     def averageMemTestParams(self, N: int) -> None:
         """Take average of start and end capacitive transients"""
@@ -502,7 +506,7 @@ class VoltageClampEstim(AbstractAnalyzer):
         self.params_SWH = params_SWH
         self.params_MDC = params_MDC
 
-    def estimate_MT(
+    def estimate_memTest(
         self, startend: List[int], df: pd.DataFrame, **fit_kwargs
     ) -> None:
         """Using the method described by SW Harden and pClamp, estimate Ra, Rm, and Cm by fitting a single exponential to the capacitive transient of a membrane test step.
@@ -516,28 +520,29 @@ class VoltageClampEstim(AbstractAnalyzer):
         """
         N = int(df.shape[1]/2)
 
-        # isolate membrane test
-        df_MT = df.iloc[startend[k]:startend[k+1], :].copy()
-        df_MT.index -= df_MT.index[0]
-        times = df_MT.index.values.tolist()
-
-        # fifth of the interval used for I_ss calculations
-        fifth = int(df_MT.shape[0]/5)
-
-        # invert transient if mean of first 20ms is less than last 20ms
-        mu = df_MT.iloc[:, :N].mean(axis=0).values
-        if mu[0] < mu[-1]:
-            df_MT.iloc[:, :N] *= -1
-
-        for i in range(N):
-            I_t = df_MT.iloc[:, i].values
-
-            # estimate parameters for starting and ending capacitive transients
-            for t in startend:
-                self._memTest(I_t, times, df, t, fifth, **fit_kwargs)
+        # estimate parameters for starting and ending capacitive transients
+        for i in range(len(startend)-1):
+            
+            # isolate membrane test step 
+            ta, tb = startend[i:i+2]
+            df_MT = df.iloc[ta:tb, :].copy()
+            df_MT.index -= df_MT.index[0]
+            
+            # fifth of the interval used for I_ss calculations
+            fifth = int(df_MT.shape[0]/5)
+            times = df_MT.index.values.tolist()
+            
+            # invert transient if mean of first 20ms is less than last 20ms
+            mu = df_MT.iloc[:, :N].mean(axis=0).values
+            if mu[0] < mu[-1]:
+                df_MT.iloc[:, :N] *= -1
+            
+            for j in range(N):
+                I_t = df_MT.iloc[:, j].values
+                self._compute_memTest(df, times, I_t, ta, fifth, **fit_kwargs)
 
         # average parameters
-        self._averageMemTestParams(N)
+        self.averageMemTestParams(N)
 
     def plot_results(
         self, fig_kw: Dict[str, Any] = {'figsize': (12, 6)},
@@ -573,9 +578,9 @@ class VoltageClampEstim(AbstractAnalyzer):
 
     def extract_data(self, key: str) -> Any:
         if key not in self.__dict__ and\
-                key not in self._data.attrs:
+                key not in self.__data.attrs:
             return
         elif key in self.__dict__:
             return self.__dict__[key]
-        elif key in self._data.attrs:
-            return self._data.attrs[key]
+        elif key in self.__data.attrs:
+            return self.__data.attrs[key]

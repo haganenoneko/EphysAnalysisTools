@@ -18,9 +18,9 @@ These are style guidelines (some are arbitrary) for personal use. They do not ne
     - more than 3 words in the class name
     - two or more similar classes, e.g. `Word_A`, `Word_B`
 - method names are in camel case, e.g. `wordWord`
-  - use of underscores follows that in class names 
+  - leading underscore when the method is only called by one other function, i.e. a private function, e.g. `self._wordWord`
 - class attributes names, e.g. `self._wordA_wordB_wordC`
-  - prefixed by an underscore
+  - prefixed by two underscores
   - fully lower case 
   - words are delimited by underscores
 - class properties (`@property`) are like attributes, but are not prefixed by an underescore, e.g. `self.wordA_wordB_wordC`
