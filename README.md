@@ -42,3 +42,7 @@ The goals of this library are as follows:
 ## Activation curves
 - Data:
   - 
+  
+=======
+Everything is highly experimental. 
+updates are expected every couple months. 
