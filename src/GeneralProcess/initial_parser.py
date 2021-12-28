@@ -11,7 +11,7 @@ import pandas as pd
 from typing import List, Dict, Tuple, Any
 
 from GeneralProcess.base import NDArrayFloat
-from GeneralProcess.base import AbstractRecording, AbstractAnalyzer
+from GeneralProcess.base import Recording, AbstractAnalyzer
 
 from GeneralProcess.ephys_info_filter import EphysInfoFiltering
 

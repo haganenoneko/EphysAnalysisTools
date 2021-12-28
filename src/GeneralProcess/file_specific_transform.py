@@ -8,15 +8,15 @@ Use this script to implement file-specific transformations to the data.
 
 A *justified* use case is when a recording(s) whose protocol did not 
 follow the specified command for one or more sweeps. In this case, add 
-a subclass of `AbstractSpecificTransform` that either corrects or removes
+a subclass of `AbstractTransform` that either corrects or removes
 the 'offending' sweeps.
 
 A justified use case should not modify the current record. An *unjustified* use 
 case manipulates the data in such a way that the current record (timepoints, 
 current amplitudes, sweep order, etc.) are substantially modified. 
 
-If desired, implement subclasses of `ConstrainedSpecificTransform`, which 
-contains simple constraints on how the data may be transformed. These constraints are:
+If desired, use the `with_validation` decorator, which applies simple constraints to the transformation.
+These constraints are:
 1. The current record is untouched, or removed with the corresponding voltage command
 2. The order of sweeps is preserved
 3. The maximum and minimum voltage in each command is preserved. 
@@ -25,15 +25,27 @@ contains simple constraints on how the data may be transformed. These constraint
 import numpy as np 
 import pandas as pd
 
-from typing import List, Tuple
+from typing import List, Tuple, Dict, 
+from typing import Callable, Union
 
 from abc import ABC, abstractmethod
 
-from GeneralProcess.base import NDArrayFloat
+from decorator import decorator 
+
+from functools import singledispatch
+
+from GeneralProcess.base import NDArrayFloat, NDArrayInt, NDArrayBool
+from GeneralProcess.base import extendListAsArray
+
+# ------------------------------- Custom types ------------------------------- #
+
+TransformInput = Union[str, List[int], pd.DataFrame]
+TransformOutput = Tuple[List[int], pd.DataFrame]
+TransformType = Callable[[str, List[int], pd.DataFrame], TransformOutput]
 
 # -------------------------------- Interfaces -------------------------------- #
 
-class AbstractSpecificTransform(ABC):
+class AbstractTransform(ABC):
     
     @abstractmethod
     def __init__(self, df: pd.DataFrame) -> None:
@@ -41,9 +53,10 @@ class AbstractSpecificTransform(ABC):
     
     @staticmethod
     @abstractmethod
-    def static_transform(self): 
+    def static_transform(self, func: TransformType): 
         pass 
 
+# --------------------------- Transform validation --------------------------- #
 class TransformError(ValueError):
     def __init__(self, validation: str, data: pd.DataFrame) -> None:
         super().__init__(
@@ -51,172 +64,117 @@ class TransformError(ValueError):
                 < {validation} >\n{data}"
         )
 
-class ConstrainedSpecificTransform(AbstractSpecificTransform):
-    
-    def __init__(self, df: pd.DataFrame, 
-                voltage_range: Tuple[int, int]=(-200, 100)) -> None:
-        
-        self._df = df 
-        self._voltage_range = voltage_range
-        
-    def validateVoltageRange(self, transformed: pd.DataFrame) -> bool:
-        """Ensure that all voltages are in `self._voltage_range`"""
-        
-        vlims = self._voltage_range
-        v_min = transformed.min(axis=0) 
-        v_max = transformed.max(axis=0)
-        
-        try:
-            assert (v_min.copy() > vlims[0]).all()
-        except AssertionError:
-            raise TransformError(
-                f"There are voltages below minimum {vlims[0]}",
-                v_min
-            )
-        
-        try:
-            assert (v_max.copy() < vlims[1]).all()
-        except AssertionError:
-            raise TransformError(
-                f"There are voltages above the maximum {vlims[1]}",
-                v_max
-            )
-        
-        return True 
-        
-    def validateColumns(self, transformed: pd.DataFrame) -> bool:
-        """Ensure that columns match the original or are even in number"""
-        
-        n_col = self._df.shape[1]
-        assert n_col % 2 == 0
-        
-        if transformed.shape[1] == n_col: 
-            return True 
-        
-        if transformed.shape[1] % 2 != 0: 
-            data = f"{self._df.head}\n{transformed.head}"
-            raise TransformError("An even number of columns.", data)
-        
-        n_sweeps = int(n_col/2)
-        self.validateVoltageRange(transformed.iloc[:, n_sweeps:])
-        
-        return True 
-        
-    def validateRows(self, transformed: pd.DataFrame) -> bool:
-        """Ensure that rows match the original or are equal in number"""
-        
-        if transformed.shape[0] == self._df.shape[0]:
-            return True 
-            
-        def get_nrows(df: pd.DataFrame, col: int) -> int:
-            return df.iloc[:, col].dropna().shape[0]
-        
-        n_0 = get_nrows(transformed, 0)
-        for i in range(transformed.shape[1]):
-            n_i = get_nrows(transformed, i)
+def validateVoltageRange(transformed: pd.DataFrame, vlims: Tuple[int, int]=(-200, 100)) -> bool:
+    """Ensure that all voltages are in `self._voltage_range`"""
 
-            if n_i != n_0:
-                data = f"First column: {n_0}\t{i}-th column: {n_i}"
-            
-                raise TransformError(
-                    "Equal number of non-NaN elements in each column.",
-                    data
-                )
-        return True 
-            
-    def validate(self, transformed: pd.DataFrame) -> bool:
-        self.validateVoltageRange(transformed)
-        self.validateColumns(transformed)
-        self.validateRows(transformed)
+    N = int(transformed.shape[1]/2)
+    df = transformed.iloc[:, N:]
+    v_min = df.min(axis=0) 
+    v_max = df.max(axis=0)
+    
+    try:
+        assert (v_min.copy() > vlims[0]).all()
+    except AssertionError:
+        raise TransformError(
+            f"There are voltages below minimum {vlims[0]}",
+            v_min
+        )
+    
+    try:
+        assert (v_max.copy() < vlims[1]).all()
+    except AssertionError:
+        raise TransformError(
+            f"There are voltages above the maximum {vlims[1]}",
+            v_max
+        )
+    
+    return True 
+        
+def validateColumns(original: pd.DataFrame, transformed: pd.DataFrame) -> bool:
+    """Ensure that columns match the original or are even in number"""
+    
+    n_col = original.shape[1]
+    assert n_col % 2 == 0
+    
+    if transformed.shape[1] == n_col: 
         return True 
     
-    def static_transform(self):
-        """Add `self.validate(..)` to your output if you implement this subclass"""
-        return 
+    if transformed.shape[1] % 2 != 0: 
+        data = f"{original.head}\n{transformed.head}"
+        raise TransformError("An even number of columns.", data)
+    
+    return True 
+    
+def validateRows(original: pd.DataFrame, transformed: pd.DataFrame) -> bool:
+    """Ensure that rows match the original or are equal in number"""
+    
+    if transformed.shape[0] == original.shape[0]:
+        return True 
         
+    def get_nrows(df: pd.DataFrame, col: int) -> int:
+        return df.iloc[:, col].dropna().shape[0]
+    
+    n_0 = get_nrows(transformed, 0)
+    for i in range(transformed.shape[1]):
+        n_i = get_nrows(transformed, i)
+        if n_i == n_0: continue 
+
+        data = f"First column: {n_0}\t{i}-th column: {n_i}"
+    
+        raise TransformError(
+            "Equal number of non-NaN elements in each column.",
+            data
+        )
+            
+    return True 
+
+@decorator 
+def with_validation(
+    func: TransformType, *args: TransformInput, vlims: Tuple[int, int]=(-200, 200)
+) -> TransformOutput:
+    
+    epoch_inds, transformed = func(*args)
+    validateColumns(args[2], transformed)
+    validateVoltageRange(transformed, vlims=vlims)
+    validateRows(transformed)
+    return epoch_inds, transformed 
+
 # -------------------------- Implemented transforms -------------------------- #
-        
-def file_specific_transform(
-    fname: str, times: List[int]=None, df: pd.DataFrame=None
-):
-    """
-    Apply file-specific transformation to times, as necessary.  
-    `fname` = filename or 'FA_env_+20'
-    `df` = dataframe 
-    `times` = bounding intervals for leak ramp  
-    `khz` = sampling rate 
-    """
-    FA_env = [
-        '2091004', '20911007', '20o08003', '20o16001',  # +20
-        '20o16002', '21521006'                          # -55
-    ]
-    to_transform = ["20903005"]
-    to_transform.extend(FA_env)
 
-    if fname in to_transform:
-        if times is not None:
+def linearTransformEpochTimes(times: List[float], 
+    shift: Union[float, List[float]]=None, 
+    scale: Union[float, List[float]]=None, 
+    condition_on_sweep_index: Callable[[NDArrayInt], NDArrayBool]=None,
+    condition_on_epoch_index: Callable[[NDArrayInt], NDArrayBool]=None,
+    condition_on_value: Callable[[NDArrayFloat], bool]=None
+) -> List[float]:
 
-            # ramp start (t0) and end (t1) times
-            if isinstance(times, list):
-
-                if fname == '20903005':
-                    # after the first trace, multiply all epochs by 2
-                    t0, t1 = times
-                    return [t0, t1, 2*t0, 2*t1, 2*t0, 2*t1]
-
-            elif isinstance(times, dict):
-
-                if fname in times.keys():
-                    if fname == '20903005':
-                        d = times[fname]
-
-                        for i in range(1, len(d)):
-                            d[i] = [2*x for x in d[i]]
-
-                        times[fname] = d
-
-                    elif fname in FA_env:
-                        if isinstance(times[fname][0], list):
-                            if times[fname][0][-1] > 47000:
-                                val = times[fname][0]
-                                times[fname][0][-3:] = [x -
-                                                        7233 for x in val[-3:]]
-
-                        elif isinstance(times[fname][0], int):
-                            if times[fname][0] > 47000:
-                                times[fname][0] -= 7233
-
-            elif isinstance(times, tuple):
-
-                # tuple = abf_sum, csv_sum -> force abf_sum = csv_sum
-                if fname == '20903005':
-                    return times[0]
-                else:
-                    return times[1]
-
-            return times
-
-        if df is not None:
-            if fname in FA_env:
-                N = int(df.shape[1]/2)
-
-                dt = df.shape[0] - 47937
-                new = df.iloc[40704:, N].copy()
-
-                # plt.plot(df.iloc[:,N], lw=2, c='y')
-                df.iloc[40704:(40704+dt), N] = new.iloc[7233:].values
-                df.iloc[52766:, N] = df.iloc[-1, N]
-
-                return df
-
+    arr = np.array(times)
+    dims = np.array([np.arange(x, dtype=int) for x in arr.shape])
+    
+    if condition_on_sweep_index is not None:
+        dims[0] = condition_on_sweep_index(dims[0])
     else:
-        if times is not None:
-            if isinstance(times, tuple):
-                # abf_sum, csv_sum -> keep csv_sum
-                return times[1]
-            else:
-                # don't change anything
-                return times
-
-        elif df is not None:
-            return df
+        dims[0] = 1
+        
+    if condition_on_epoch_index is not None:
+        dims[1] = condition_on_epoch_index(dims[1])
+    else:
+        dims[1] = 1 
+    
+    if isinstance(shift, list):
+        shift = extendListAsArray(shift, arr.shape)
+    
+    if isinstance(scale, list):
+        scale = extendListAsArray(scale, arr.shape)
+    
+    if condition_on_value is None:
+        return (arr + shift).tolist()
+    
+    for (i, j), value in np.denumerate(arr):
+        
+        if not (condition_on_value(value) and dims[i,j]): continue 
+        
+        arr[i, j] = value*scale[i, j] + shift[i, j] 
+        
+    return arr.tolist()

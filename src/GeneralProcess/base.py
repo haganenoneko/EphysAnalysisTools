@@ -14,10 +14,14 @@ from abc import ABC, abstractmethod
 
 from pydantic import BaseModel, ValidationError, validator
 
-from typing import Dict, Any, List, Union
+from typing import Dict, Any, List, Union, TypeVar, Tuple
 import numpy.typing as npt 
 
 # ------------------------------- Custom types ------------------------------- #
+
+TNumber = TypeVar('TNumber', int, float)
+
+NDArrayBool = npt.NDArray[np.bool_]
 NDArrayInt = npt.NDArray[np.int_]
 NDArrayFloat = npt.NDArray[np.float64]
 
@@ -35,11 +39,11 @@ class Recording(BaseModel):
     epoch_intervals: Dict[int, List[int]]
     attrs: Dict[str, Any]
 
-class Recording_Leak(Recording):
+class RecordingWithLeak(Recording):
     """Recordings that contain leak ramp steps"""
     ramp_startend: List[int]
     
-class Recording_Leak_MemTest(Recording_Leak):
+class RecordingWithMemTest(RecordingWithLeak):
     """Recordings that contain leak ramp and membrane test steps"""
     mt_startend: List[int]
 
@@ -78,6 +82,23 @@ class AbstractAnalyzer(ABC):
         return 
         
 # ----------------------------- Simple functions ----------------------------- #
+
+def scalarTimesList(scalar: TNumber, lst: List[TNumber]) -> List[TNumber]:
+    return [scalar*x for x in lst]
+
+def extendListAsArray(lst: List[TNumber], dims: Tuple[int, int]) -> Union[NDArrayFloat, NDArrayInt]:
+    
+    elemType = type(lst[0])
+    lst = np.full((dims[0], len(lst)), lst, dtype=elemType)
+    
+    if lst.shape == dims: 
+        return lst 
+    
+    extension = (0, dims[1] - lst.shape[1])
+    lst = np.pad(lst, ((0, 0), extension), 
+                    mode='constant', constant_values=lst[-1])
+    
+    return lst     
 
 # define a single exponential
 def exp1(
