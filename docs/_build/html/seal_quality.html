@@ -1,0 +1,277 @@
+
+<!DOCTYPE html>
+
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="generator" content="Docutils 0.17.1: http://docutils.sourceforge.net/" />
+
+    <title>Analyzing Seal Quality with GeneralProcessing.seal_quality &#8212; EphysAnalysisTools 0.1 documentation</title>
+    <link rel="stylesheet" type="text/css" href="_static/pygments.css" />
+    <link rel="stylesheet" type="text/css" href="_static/alabaster.css" />
+    <script data-url_root="./" id="documentation_options" src="_static/documentation_options.js"></script>
+    <script src="_static/jquery.js"></script>
+    <script src="_static/underscore.js"></script>
+    <script src="_static/doctools.js"></script>
+    <link rel="index" title="Index" href="genindex.html" />
+    <link rel="search" title="Search" href="search.html" />
+    <link rel="prev" title="Welcome to EphysAnalysisTools’s documentation!" href="index.html" />
+   
+  <link rel="stylesheet" href="_static/custom.css" type="text/css" />
+  
+  
+  <meta name="viewport" content="width=device-width, initial-scale=0.9, maximum-scale=0.9" />
+
+  </head><body>
+  
+
+    <div class="document">
+      <div class="documentwrapper">
+        <div class="bodywrapper">
+          
+
+          <div class="body" role="main">
+            
+  <section id="analyzing-seal-quality-with-generalprocessing-seal-quality">
+<h1>Analyzing Seal Quality with <cite>GeneralProcessing.seal_quality</cite><a class="headerlink" href="#analyzing-seal-quality-with-generalprocessing-seal-quality" title="Permalink to this headline">¶</a></h1>
+<span class="target" id="module-GeneralProcess.seal_quality"></span><p>This module analyzes the quality of recordings by computing and visualizing seal parameters membrane capacitance (Cm), series resistance (Rsr), and membrane (Rm), seal (Rsl), and pipette (Rp) resistances.</p>
+<p>Note that the methods used for Cm calculation assume that protocols include a symmetric voltage ramp.</p>
+<dl class="simple">
+<dt>The functions in this module are inspired by the following references:</dt><dd><ol class="arabic simple">
+<li><p><a class="reference external" href="http://www.billconnelly.net/?p=310">http://www.billconnelly.net/?p=310</a></p></li>
+<li><p><a class="reference external" href="https://www.electronics-tutorials.ws/filter/filter_2.html">https://www.electronics-tutorials.ws/filter/filter_2.html</a></p></li>
+<li><p><a class="reference external" href="https://swharden.com/blog/2020-10-11-model-neuron-ltspice/">https://swharden.com/blog/2020-10-11-model-neuron-ltspice/</a></p></li>
+<li><p><a class="reference external" href="http://www.billconnelly.net/?p=501">http://www.billconnelly.net/?p=501</a></p></li>
+<li><p><a class="reference external" href="https://www.electronics-tutorials.ws/amplifier/frequency-response.html">https://www.electronics-tutorials.ws/amplifier/frequency-response.html</a></p></li>
+<li><p><a class="reference external" href="https://support.moleculardevices.com/s/article/Membrane-Test-Algorithms">https://support.moleculardevices.com/s/article/Membrane-Test-Algorithms</a></p></li>
+</ol>
+</dd>
+</dl>
+<dl class="py class">
+<dt class="sig sig-object py" id="GeneralProcess.seal_quality.EstimateRampCm">
+<em class="property"><span class="pre">class</span><span class="w"> </span></em><span class="sig-prename descclassname"><span class="pre">GeneralProcess.seal_quality.</span></span><span class="sig-name descname"><span class="pre">EstimateRampCm</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="o"><span class="pre">*</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">khz</span></span><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="n"><span class="pre">int</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">ramp_startend</span></span><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="n"><span class="pre">List</span><span class="p"><span class="pre">[</span></span><span class="pre">int</span><span class="p"><span class="pre">]</span></span></span></em>, <em class="sig-param"><span class="n"><span class="pre">ramp_centerFrac</span></span><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="n"><span class="pre">float</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#GeneralProcess.seal_quality.EstimateRampCm" title="Permalink to this definition">¶</a></dt>
+<dd><p>Estimate membrane capacitance ($C_m$) from symmetric voltage ramps. 
+See Ref. 3 in the module header for more info.</p>
+<dl class="py method">
+<dt class="sig sig-object py" id="GeneralProcess.seal_quality.EstimateRampCm.get_ramp_Cm">
+<span class="sig-name descname"><span class="pre">get_ramp_Cm</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">df</span></span><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="n"><span class="pre">pandas.core.frame.DataFrame</span></span></em><span class="sig-paren">)</span> <span class="sig-return"><span class="sig-return-icon">&#x2192;</span> <span class="sig-return-typehint"><span class="pre">pandas.core.frame.DataFrame</span></span></span><a class="headerlink" href="#GeneralProcess.seal_quality.EstimateRampCm.get_ramp_Cm" title="Permalink to this definition">¶</a></dt>
+<dd><p>Use <cite>SW Harden</cite>’s method to estimate membrane capcitance ($C_m$) 
+from symmetric voltage ramps (see Ref. 3 in the module header)</p>
+<dl class="field-list simple">
+<dt class="field-odd">Parameters</dt>
+<dd class="field-odd"><p><strong>df</strong> (<em>pd.DataFrame</em>) – full dataframe containing current in first N columns and corresponding voltage command in second N columns</p>
+</dd>
+<dt class="field-even">Returns</dt>
+<dd class="field-even"><p>estimated membrane capacitance</p>
+</dd>
+<dt class="field-odd">Return type</dt>
+<dd class="field-odd"><p>List[float]</p>
+</dd>
+</dl>
+</dd></dl>
+
+</dd></dl>
+
+<dl class="py function">
+<dt class="sig sig-object py" id="GeneralProcess.seal_quality.MemTest_MDC">
+<span class="sig-prename descclassname"><span class="pre">GeneralProcess.seal_quality.</span></span><span class="sig-name descname"><span class="pre">MemTest_MDC</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">I_t</span></span><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="n"><span class="pre">numpy.ndarray</span><span class="p"><span class="pre">[</span></span><span class="pre">Any</span><span class="p"><span class="pre">,</span></span><span class="w"> </span><span class="pre">numpy.dtype</span><span class="p"><span class="pre">[</span></span><span class="pre">numpy.float64</span><span class="p"><span class="pre">]</span></span><span class="p"><span class="pre">]</span></span></span></em>, <em class="sig-param"><span class="n"><span class="pre">times</span></span><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="n"><span class="pre">numpy.ndarray</span><span class="p"><span class="pre">[</span></span><span class="pre">Any</span><span class="p"><span class="pre">,</span></span><span class="w"> </span><span class="pre">numpy.dtype</span><span class="p"><span class="pre">[</span></span><span class="pre">numpy.float64</span><span class="p"><span class="pre">]</span></span><span class="p"><span class="pre">]</span></span></span></em>, <em class="sig-param"><span class="n"><span class="pre">dV_max</span></span><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="n"><span class="pre">float</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">tau</span></span><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="n"><span class="pre">float</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">I_ss</span></span><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="n"><span class="pre">float</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">I_dss</span></span><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="n"><span class="pre">float</span></span></em><span class="sig-paren">)</span> <span class="sig-return"><span class="sig-return-icon">&#x2192;</span> <span class="sig-return-typehint"><span class="pre">Tuple</span><span class="p"><span class="pre">[</span></span><span class="pre">List</span><span class="p"><span class="pre">[</span></span><span class="pre">float</span><span class="p"><span class="pre">]</span></span><span class="p"><span class="pre">,</span></span><span class="w"> </span><span class="pre">float</span><span class="p"><span class="pre">]</span></span></span></span><a class="headerlink" href="#GeneralProcess.seal_quality.MemTest_MDC" title="Permalink to this definition">¶</a></dt>
+<dd><p>Compute seal parameters using Molecular Devices’ (MDC) formulae, and estimate the error by comparing the fitted time constant <cite>tau</cite> to that estimated by <cite>Cm * R_t2</cite>, where <cite>R_t2</cite> is the sum of access (<cite>R_a</cite>) and membrane resistances (<cite>R_m</cite>). See Ref. 6 in the module header for more information.</p>
+<dl class="field-list simple">
+<dt class="field-odd">Parameters</dt>
+<dd class="field-odd"><ul class="simple">
+<li><p><strong>I_t</strong> (<em>NDArrayFloat</em>) – membrane test current</p></li>
+<li><p><strong>times</strong> (<em>NDArrayFloat</em>) – measurement times</p></li>
+<li><p><strong>dV_max</strong> (<em>float</em>) – maximum voltage drop</p></li>
+<li><p><strong>tau</strong> (<em>float</em>) – single-exponential time constant fitted to the decay of the membrane test current from its peak</p></li>
+<li><p><strong>I_ss</strong> (<em>float</em>) – steady state current at the end of the membrane test step</p></li>
+<li><p><strong>I_dss</strong> (<em>float</em>) – difference between <cite>I_ss</cite> and baseline current</p></li>
+</ul>
+</dd>
+<dt class="field-even">Returns</dt>
+<dd class="field-even"><p>[<cite>R_a</cite>, <cite>R_m</cite>, <cite>C_m</cite>], deviation in <cite>tau</cite></p>
+</dd>
+<dt class="field-odd">Return type</dt>
+<dd class="field-odd"><p>Tuple[L, float]</p>
+</dd>
+</dl>
+</dd></dl>
+
+<dl class="py function">
+<dt class="sig sig-object py" id="GeneralProcess.seal_quality.MemTest_SWH">
+<span class="sig-prename descclassname"><span class="pre">GeneralProcess.seal_quality.</span></span><span class="sig-name descname"><span class="pre">MemTest_SWH</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">dV_max</span></span><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="n"><span class="pre">float</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">tau</span></span><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="n"><span class="pre">float</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">I_d</span></span><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="n"><span class="pre">float</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">I_dss</span></span><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="n"><span class="pre">float</span></span></em><span class="sig-paren">)</span> <span class="sig-return"><span class="sig-return-icon">&#x2192;</span> <span class="sig-return-typehint"><span class="pre">List</span><span class="p"><span class="pre">[</span></span><span class="pre">float</span><span class="p"><span class="pre">]</span></span></span></span><a class="headerlink" href="#GeneralProcess.seal_quality.MemTest_SWH" title="Permalink to this definition">¶</a></dt>
+<dd><p>Compute seal parameters using SW Harden’s formulae</p>
+<p>At time zero, access resistance limits our ability to deliver current <cite>Id</cite> to a known <cite>dV</cite> (<cite>Cm</cite> doesn’t come into play yet). Thus, 
+$$ R_a = Delta V_{max} / I_d $$</p>
+<p>the difference between this steady state current (Iss) and the last one (<cite>Iprev</cite>) is limited by the sum of <cite>Rm</cite> and <cite>Ra</cite>
+$$ R_m + R_a = Delta V_{max} / (I_{ss} - I_0) $$
+$$ R_m = (Delta V_{max} - R_a * (I_{ss} - I_0) ) / (I_{ss} - I_0) $$</p>
+<p>When we raise the cell’s voltage (<cite>Vm</cite>) by delivering current through the pipette (Ra), some current escapes through <cite>Rm</cite>. From the cell’s perspective when we charge it though, <cite>Ra</cite> and <cite>Rm</cite> are in parallel.</p>
+<p>$$ C_m =    au / R_T $$
+$$ 1/R_T = 1/R_a + 1/R_m $$</p>
+<p><cite>Rm</cite> leaks a small amount of the <cite>Id</cite> current that passes through Ra to charge <cite>Cm</cite>. We can calculate a correction factor as the ratio of <cite>Ra</cite> to <cite>Rm</cite> and multiply it by both of our resistances. <cite>Cm</cite> can be corrected by dividing it by the square of this ratio.</p>
+<dl class="field-list simple">
+<dt class="field-odd">Parameters</dt>
+<dd class="field-odd"><ul class="simple">
+<li><p><strong>dV_max</strong> (<em>float</em>) – maximum voltage drop</p></li>
+<li><p><strong>tau</strong> (<em>float</em>) – single-exponential time constant fitted to the decay of the membrane test current from its peak</p></li>
+<li><p><strong>I_d</strong> (<em>float</em>) – difference between peak membrane test current and baseline current</p></li>
+<li><p><strong>I_dss</strong> (<em>float</em>) – difference between steady-state membrane test current and baseline current</p></li>
+</ul>
+</dd>
+<dt class="field-even">Returns</dt>
+<dd class="field-even"><p>[<cite>tau</cite>, <cite>R_a</cite>, <cite>R_m</cite>, <cite>C_m</cite>]</p>
+</dd>
+<dt class="field-odd">Return type</dt>
+<dd class="field-odd"><p>List[float]</p>
+</dd>
+</dl>
+</dd></dl>
+
+<dl class="py class">
+<dt class="sig sig-object py" id="GeneralProcess.seal_quality.VoltageClampEstim">
+<em class="property"><span class="pre">class</span><span class="w"> </span></em><span class="sig-prename descclassname"><span class="pre">GeneralProcess.seal_quality.</span></span><span class="sig-name descname"><span class="pre">VoltageClampEstim</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">data</span></span><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="n"><span class="pre">GeneralProcess.base.RecordingWithMemTest</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">memtest_kw</span></span><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="n"><span class="pre">Dict</span><span class="p"><span class="pre">[</span></span><span class="pre">str</span><span class="p"><span class="pre">,</span></span><span class="w"> </span><span class="pre">Any</span><span class="p"><span class="pre">]</span></span></span><span class="w"> </span><span class="o"><span class="pre">=</span></span><span class="w"> </span><span class="default_value"><span class="pre">{}</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">centerFrac</span></span><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="n"><span class="pre">float</span></span><span class="w"> </span><span class="o"><span class="pre">=</span></span><span class="w"> </span><span class="default_value"><span class="pre">0.3</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">show</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">False</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">memtest_plot_kw</span></span><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="n"><span class="pre">Dict</span><span class="p"><span class="pre">[</span></span><span class="pre">str</span><span class="p"><span class="pre">,</span></span><span class="w"> </span><span class="pre">Any</span><span class="p"><span class="pre">]</span></span></span><span class="w"> </span><span class="o"><span class="pre">=</span></span><span class="w"> </span><span class="default_value"><span class="pre">{}</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">ramp_cm_plot_kw</span></span><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="n"><span class="pre">Dict</span><span class="p"><span class="pre">[</span></span><span class="pre">str</span><span class="p"><span class="pre">,</span></span><span class="w"> </span><span class="pre">Any</span><span class="p"><span class="pre">]</span></span></span><span class="w"> </span><span class="o"><span class="pre">=</span></span><span class="w"> </span><span class="default_value"><span class="pre">{}</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#GeneralProcess.seal_quality.VoltageClampEstim" title="Permalink to this definition">¶</a></dt>
+<dd><p>Estimate $C_m$, $R_m$, and $R_{sr}$ from recording parameters 
+using two methods:</p>
+<p>1. <cite>MemTest_SWH</cite>
+<cite>SWH</cite> and <cite>SW Harden</cite> refer to Scott W. Harden. This method 
+estimates membrane capacitance $C_m$ from the current response to
+two symmetric symmetric voltage ramps. See Ref. 3 in the main 
+header for more information.</p>
+<p>2. <cite>MemTest_MDC</cite>
+<cite>MDC</cite> and <cite>Molecular Devices</cite> refer to algorithms implemented
+in pClamp/Axoscope software (Molecular Devices, LLC., San Jose, CA).
+The implementation here follows the description in Ref. 6.</p>
+<dl class="py method">
+<dt class="sig sig-object py" id="GeneralProcess.seal_quality.VoltageClampEstim.averageMemTestParams">
+<span class="sig-name descname"><span class="pre">averageMemTestParams</span></span><span class="sig-paren">(</span><span class="sig-paren">)</span> <span class="sig-return"><span class="sig-return-icon">&#x2192;</span> <span class="sig-return-typehint"><span class="pre">Tuple</span><span class="p"><span class="pre">[</span></span><span class="pre">pandas.core.frame.DataFrame</span><span class="p"><span class="pre">]</span></span></span></span><a class="headerlink" href="#GeneralProcess.seal_quality.VoltageClampEstim.averageMemTestParams" title="Permalink to this definition">¶</a></dt>
+<dd><p>Take average of start and end capacitive transients</p>
+</dd></dl>
+
+<dl class="py method">
+<dt class="sig sig-object py" id="GeneralProcess.seal_quality.VoltageClampEstim.estimate_RampCm">
+<span class="sig-name descname"><span class="pre">estimate_RampCm</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">centerFrac</span></span><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="n"><span class="pre">float</span></span></em><span class="sig-paren">)</span> <span class="sig-return"><span class="sig-return-icon">&#x2192;</span> <span class="sig-return-typehint"><span class="pre">List</span><span class="p"><span class="pre">[</span></span><span class="pre">float</span><span class="p"><span class="pre">]</span></span></span></span><a class="headerlink" href="#GeneralProcess.seal_quality.VoltageClampEstim.estimate_RampCm" title="Permalink to this definition">¶</a></dt>
+<dd><p>Estimate membrane capacitance $C_m$ from symmetric voltage ramps</p>
+</dd></dl>
+
+<dl class="py method">
+<dt class="sig sig-object py" id="GeneralProcess.seal_quality.VoltageClampEstim.estimate_memTest">
+<span class="sig-name descname"><span class="pre">estimate_memTest</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">startend</span></span><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="n"><span class="pre">List</span><span class="p"><span class="pre">[</span></span><span class="pre">int</span><span class="p"><span class="pre">]</span></span></span></em>, <em class="sig-param"><span class="o"><span class="pre">**</span></span><span class="n"><span class="pre">fit_kwargs</span></span></em><span class="sig-paren">)</span> <span class="sig-return"><span class="sig-return-icon">&#x2192;</span> <span class="sig-return-typehint"><span class="pre">Tuple</span><span class="p"><span class="pre">[</span></span><span class="pre">pandas.core.frame.DataFrame</span><span class="p"><span class="pre">]</span></span></span></span><a class="headerlink" href="#GeneralProcess.seal_quality.VoltageClampEstim.estimate_memTest" title="Permalink to this definition">¶</a></dt>
+<dd><p>Using the method described by SW Harden and pClamp, estimate Ra, Rm, and Cm by fitting a single exponential to the capacitive transient of a membrane test step.</p>
+<dl class="field-list simple">
+<dt class="field-odd">Parameters</dt>
+<dd class="field-odd"><ul class="simple">
+<li><p><strong>startend</strong> (<em>List</em><em>[</em><em>int</em><em>]</em>) – indices for the start and end of membrane test step in <cite>df</cite></p></li>
+<li><p><strong>df</strong> (<em>pd.DataFrame</em>) – raw data, with 1:N current columns and N+1:2N voltage columns</p></li>
+<li><p><strong>khz</strong> (<em>int</em><em>, </em><em>optional</em>) – sampling rate, in Khz</p></li>
+</ul>
+</dd>
+</dl>
+</dd></dl>
+
+<dl class="py method">
+<dt class="sig sig-object py" id="GeneralProcess.seal_quality.VoltageClampEstim.plot_RampCm">
+<span class="sig-name descname"><span class="pre">plot_RampCm</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">fig_kw</span></span><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="n"><span class="pre">Dict</span><span class="p"><span class="pre">[</span></span><span class="pre">str</span><span class="p"><span class="pre">,</span></span><span class="w"> </span><span class="pre">Any</span><span class="p"><span class="pre">]</span></span></span><span class="w"> </span><span class="o"><span class="pre">=</span></span><span class="w"> </span><span class="default_value"><span class="pre">{'figsize':</span> <span class="pre">(7,</span> <span class="pre">4)}</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">plot_kw</span></span><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="n"><span class="pre">Dict</span><span class="p"><span class="pre">[</span></span><span class="pre">str</span><span class="p"><span class="pre">,</span></span><span class="w"> </span><span class="pre">Any</span><span class="p"><span class="pre">]</span></span></span><span class="w"> </span><span class="o"><span class="pre">=</span></span><span class="w"> </span><span class="default_value"><span class="pre">{'c':</span> <span class="pre">'b',</span> <span class="pre">'label':</span> <span class="pre">'Ramp</span> <span class="pre">$C_m$',</span> <span class="pre">'marker':</span> <span class="pre">'o'}</span></span></em><span class="sig-paren">)</span> <span class="sig-return"><span class="sig-return-icon">&#x2192;</span> <span class="sig-return-typehint"><span class="pre">None</span></span></span><a class="headerlink" href="#GeneralProcess.seal_quality.VoltageClampEstim.plot_RampCm" title="Permalink to this definition">¶</a></dt>
+<dd><p>Plot $C_m$ values estimated from symmetric voltage ramps</p>
+</dd></dl>
+
+</dd></dl>
+
+<dl class="py class">
+<dt class="sig sig-object py" id="GeneralProcess.seal_quality.VoltageClampQuality">
+<em class="property"><span class="pre">class</span><span class="w"> </span></em><span class="sig-prename descclassname"><span class="pre">GeneralProcess.seal_quality.</span></span><span class="sig-name descname"><span class="pre">VoltageClampQuality</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">data</span></span><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="n"><span class="pre">GeneralProcess.base.RecordingWithMemTest</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">show</span></span><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="n"><span class="pre">bool</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">test_freqs</span></span><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="n"><span class="pre">List</span><span class="p"><span class="pre">[</span></span><span class="pre">float</span><span class="p"><span class="pre">]</span></span></span><span class="w"> </span><span class="o"><span class="pre">=</span></span><span class="w"> </span><span class="default_value"><span class="pre">[0.1,</span> <span class="pre">10000.0,</span> <span class="pre">400]</span></span></em>, <em class="sig-param"><span class="o"><span class="pre">**</span></span><span class="n"><span class="pre">kwargs</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#GeneralProcess.seal_quality.VoltageClampQuality" title="Permalink to this definition">¶</a></dt>
+<dd><p>Inspect the effectiveness of voltage clamp by computing the ratio 
+between the actual membrane potential ($V_{out}$) and the command 
+voltage ($V_{in}$). See Ref. 1 in the module header.</p>
+<p>The corner frequency is also called the “-3dB cutoff frequency,” 
+which is the frequency at which the output gain is reduced to 
+79.71% of its maximum value. See Refs. 4 and 5 in the module header 
+for more information.</p>
+<dl class="py method">
+<dt class="sig sig-object py" id="GeneralProcess.seal_quality.VoltageClampQuality.plot_results">
+<span class="sig-name descname"><span class="pre">plot_results</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">plot_kw</span></span><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="n"><span class="pre">Dict</span><span class="p"><span class="pre">[</span></span><span class="pre">str</span><span class="p"><span class="pre">,</span></span><span class="w"> </span><span class="pre">Any</span><span class="p"><span class="pre">]</span></span></span><span class="w"> </span><span class="o"><span class="pre">=</span></span><span class="w"> </span><span class="default_value"><span class="pre">{'lw':</span> <span class="pre">2}</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">fig_kw</span></span><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="n"><span class="pre">Dict</span><span class="p"><span class="pre">[</span></span><span class="pre">str</span><span class="p"><span class="pre">,</span></span><span class="w"> </span><span class="pre">Any</span><span class="p"><span class="pre">]</span></span></span><span class="w"> </span><span class="o"><span class="pre">=</span></span><span class="w"> </span><span class="default_value"><span class="pre">{'figsize':</span> <span class="pre">(9,</span> <span class="pre">4)}</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">corner_kw</span></span><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="n"><span class="pre">Dict</span><span class="p"><span class="pre">[</span></span><span class="pre">str</span><span class="p"><span class="pre">,</span></span><span class="w"> </span><span class="pre">Any</span><span class="p"><span class="pre">]</span></span></span><span class="w"> </span><span class="o"><span class="pre">=</span></span><span class="w"> </span><span class="default_value"><span class="pre">{'ls':</span> <span class="pre">'--',</span> <span class="pre">'lw':</span> <span class="pre">2}</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">axes_kw</span></span><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="n"><span class="pre">Dict</span><span class="p"><span class="pre">[</span></span><span class="pre">str</span><span class="p"><span class="pre">,</span></span><span class="w"> </span><span class="pre">Any</span><span class="p"><span class="pre">]</span></span></span><span class="w"> </span><span class="o"><span class="pre">=</span></span><span class="w"> </span><span class="default_value"><span class="pre">{'grid':</span> <span class="pre">{'alpha':</span> <span class="pre">0.3,</span> <span class="pre">'axis':</span> <span class="pre">'both',</span> <span class="pre">'b':</span> <span class="pre">True,</span> <span class="pre">'which':</span> <span class="pre">'both'},</span> <span class="pre">'xscale':</span> <span class="pre">'log',</span> <span class="pre">'ylabel':</span> <span class="pre">{'fontsize':</span> <span class="pre">20,</span> <span class="pre">'labelpad':</span> <span class="pre">22,</span> <span class="pre">'rotation':</span> <span class="pre">0}}</span></span></em><span class="sig-paren">)</span> <span class="sig-return"><span class="sig-return-icon">&#x2192;</span> <span class="sig-return-typehint"><span class="pre">None</span></span></span><a class="headerlink" href="#GeneralProcess.seal_quality.VoltageClampQuality.plot_results" title="Permalink to this definition">¶</a></dt>
+<dd><p>Plot a <cite>V_out</cite>/<cite>V_in</cite> vs. frequency (Hz) graph and indicate the corner frequency, given seal parameters in <cite>self.__data</cite></p>
+<dl class="field-list simple">
+<dt class="field-odd">Parameters</dt>
+<dd class="field-odd"><ul class="simple">
+<li><p><strong>plot_kw</strong> (<em>KwDict</em><em>, </em><em>optional</em>) – appearance of arbitrary frequencies, defaults to {‘lw’ : 2}</p></li>
+<li><p><strong>fig_kw</strong> (<em>KwDict</em><em>, </em><em>optional</em>) – appearance of the Figure, defaults to {‘figsize’ : (9, 4)}</p></li>
+<li><p><strong>corner_kw</strong> (<em>KwDict</em><em>, </em><em>optional</em>) – appearance of line indicating the corner frequency, defaults to {‘ls’ : ‘–’, ‘lw’ : 2}</p></li>
+<li><p><strong>axes_kw</strong> (<em>KwDict</em><em>, </em><em>optional</em>) – additional axes properties, defaults to { ‘xscale’ : ‘log’, ‘ylabel’ : dict(fontsize=20, rotation=0, labelpad=22), ‘grid’ : dict(b=True, which=’both’, axis=’both’, alpha=0.3), }</p></li>
+</ul>
+</dd>
+</dl>
+</dd></dl>
+
+</dd></dl>
+
+</section>
+
+
+          </div>
+          
+        </div>
+      </div>
+      <div class="sphinxsidebar" role="navigation" aria-label="main navigation">
+        <div class="sphinxsidebarwrapper">
+<h1 class="logo"><a href="index.html">EphysAnalysisTools</a></h1>
+
+
+
+
+
+
+
+
+<h3>Navigation</h3>
+<p class="caption" role="heading"><span class="caption-text">Contents:</span></p>
+<ul class="current">
+<li class="toctree-l1 current"><a class="current reference internal" href="#">Analyzing seal quality</a></li>
+</ul>
+
+<div class="relations">
+<h3>Related Topics</h3>
+<ul>
+  <li><a href="index.html">Documentation overview</a><ul>
+      <li>Previous: <a href="index.html" title="previous chapter">Welcome to EphysAnalysisTools’s documentation!</a></li>
+  </ul></li>
+</ul>
+</div>
+<div id="searchbox" style="display: none" role="search">
+  <h3 id="searchlabel">Quick search</h3>
+    <div class="searchformwrapper">
+    <form class="search" action="search.html" method="get">
+      <input type="text" name="q" aria-labelledby="searchlabel" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false"/>
+      <input type="submit" value="Go" />
+    </form>
+    </div>
+</div>
+<script>$('#searchbox').show(0);</script>
+
+
+
+
+
+
+
+
+        </div>
+      </div>
+      <div class="clearer"></div>
+    </div>
+    <div class="footer">
+      &copy;2021, Delbert Yip.
+      
+      |
+      Powered by <a href="http://sphinx-doc.org/">Sphinx 4.3.2</a>
+      &amp; <a href="https://github.com/bitprophet/alabaster">Alabaster 0.7.12</a>
+      
+      |
+      <a href="_sources/seal_quality.rst.txt"
+          rel="nofollow">Page source</a>
+    </div>
+
+    
+
+    
+  </body>
+</html>

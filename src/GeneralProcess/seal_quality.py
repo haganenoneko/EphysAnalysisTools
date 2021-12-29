@@ -3,7 +3,7 @@
 # This software is released under the MIT License.
 # https://opensource.org/licenses/MIT
 
-""" Analysis of Voltage Clamp Seal Quality
+""" 
 This module analyzes the quality of recordings by computing and visualizing seal parameters membrane capacitance (Cm), series resistance (Rsr), and membrane (Rm), seal (Rsl), and pipette (Rp) resistances. 
 
 Note that the methods used for Cm calculation assume that protocols include a symmetric voltage ramp. 
@@ -35,8 +35,6 @@ from pydantic import BaseModel, ValidationError, validator
 
 # ---------------------------------------------------------------------------- #
 
-L = List[float]
-
 # ---------------------------------------------------------------------------- #
 
 class VoltageClampQuality(AbstractAnalyzer):
@@ -53,7 +51,7 @@ class VoltageClampQuality(AbstractAnalyzer):
 
     def __init__(
         self, data: RecordingWithMemTest, show: bool,
-        test_freqs: L = [1e-1, 1e4, 400], **kwargs
+        test_freqs: List[float] = [1e-1, 1e4, 400], **kwargs
     ) -> None:
 
         self.__data = data
@@ -70,7 +68,7 @@ class VoltageClampQuality(AbstractAnalyzer):
     @staticmethod
     def _convertUnits(
         Cm: float, Rm: float, Rsr: float, to_SI=True
-    ) -> L:
+    ) -> List[float]:
         """Convert parameter units to SI if `to_SI=True`, else the reverse."""
 
         if to_SI:
@@ -117,12 +115,12 @@ class VoltageClampQuality(AbstractAnalyzer):
         )
 
     def _computeVoltageRatios(
-        self, freqs: L
+        self, freqs: List[float]
     ) -> Tuple[NDArrayFloat, NDArrayFloat, float, float]:
         """compute Vout/Vin for ratios given frequencies
 
         :param freqs: Minimum, maximum, and number of frequencies to evaluate (in Hz)
-        :type freqs: L
+        :type freqs: List[float
         :return: `V_out`/`V_in` ratios for each frequency in a geometric sequence from `freqs[0]` to `freqs[1]`
         :rtype: NDArrayFloat
         """
@@ -139,11 +137,11 @@ class VoltageClampQuality(AbstractAnalyzer):
 
         return freqs, V_ratios, f_corner, corner_ratio
 
-    def _getFreqsAndVolageRatios(self, freqs: L) -> None:
+    def _getFreqsAndVolageRatios(self, freqs: List[float]) -> None:
         """Compute and store frequencies and voltage ratios
 
         :param freqs: minimum, maximum, and number of frequencies to evaluate
-        :type freqs: L, optional
+        :type freqs: List[float], optional
         """
         freqs, V_ratios, f_corner, corner_ratio = self._computeVoltageRatios(
             freqs)
@@ -270,10 +268,10 @@ class EstimateRampCm(BaseModel):
         """Use `SW Harden`'s method to estimate membrane capcitance ($C_m$) 
         from symmetric voltage ramps (see Ref. 3 in the module header)
 
-        :param startend: indices of `df` for the start and end of symmetric voltage rampps
-        :type startend: List[int]
+        :param df: full dataframe containing current in first N columns and corresponding voltage command in second N columns
+        :type df: pd.DataFrame
         :return: estimated membrane capacitance
-        :rtype: L
+        :rtype: List[float]
         """
         ta, tb = self.ramp_startend
         ramp = df.iloc[ta:tb, :]
@@ -291,7 +289,7 @@ class EstimateRampCm(BaseModel):
         return pd.Series(cm_vals, name='Ramp_Cm')
 
 
-def MemTest_SWH(dV_max: float, tau: float, I_d: float, I_dss: float) -> L:
+def MemTest_SWH(dV_max: float, tau: float, I_d: float, I_dss: float) -> List[float]:
     """
     Compute seal parameters using SW Harden's formulae
 
@@ -318,7 +316,7 @@ def MemTest_SWH(dV_max: float, tau: float, I_d: float, I_dss: float) -> L:
     :param I_dss: difference between steady-state membrane test current and baseline current 
     :type I_dss: float
     :return: [`tau`, `R_a`, `R_m`, `C_m`]
-    :rtype: L
+    :rtype: List[float]
     """
     R_a = abs(dV_max/I_d)*1e3
     R_m = abs((dV_max*1e-3 - R_a*I_dss*1e-6)/(I_dss*1e-12))*1e-6
@@ -337,7 +335,7 @@ def MemTest_SWH(dV_max: float, tau: float, I_d: float, I_dss: float) -> L:
 def MemTest_MDC(
     I_t: NDArrayFloat, times: NDArrayFloat, dV_max: float,
     tau: float, I_ss: float, I_dss: float
-) -> Tuple[L, float]:
+) -> Tuple[List[float], float]:
     """
     Compute seal parameters using Molecular Devices' (MDC) formulae, and estimate the error by comparing the fitted time constant `tau` to that estimated by `Cm * R_t2`, where `R_t2` is the sum of access (`R_a`) and membrane resistances (`R_m`). See Ref. 6 in the module header for more information.
 
@@ -406,9 +404,9 @@ class VoltageClampEstim(AbstractAnalyzer):
         self.__data = data
         self.__khz = data.attrs['khz']
         
-        self.params_SWH: L = []  # SW Harden methods = R_a, R_m, C_m 
-        self.params_MDC: L = []  # MDC methods = R_a, R_m, C_m
-        self.MDC_dtau: L =   []  # check correspondence between tau and Rm using tau ~ Rm*Cm
+        self.params_SWH: List[float] = []  # SW Harden methods = R_a, R_m, C_m 
+        self.params_MDC: List[float] = []  # MDC methods = R_a, R_m, C_m
+        self.MDC_dtau: List[float] =   []  # check correspondence between tau and Rm using tau ~ Rm*Cm
 
         self.run(memtest_kw, centerFrac)
         
@@ -419,8 +417,8 @@ class VoltageClampEstim(AbstractAnalyzer):
     @staticmethod
     def _fitMemTestExp1(
         times: NDArrayFloat, I_t: NDArrayFloat,
-        p0: L, lowers: L, uppers: L
-    ) -> L:
+        p0: List[float], lowers: List[float], uppers: List[float]
+    ) -> List[float]:
         """Fit single exponential to current in membrane test following peak current
 
         :param times: 
@@ -428,11 +426,11 @@ class VoltageClampEstim(AbstractAnalyzer):
         :param I_t: current in membrane test following peak current
         :type I_t: NDArrayFloat
         :param p0: initial parameters (tau, C), defaults to None
-        :type p0: L, optional
+        :type p0: List[float], optional
         :param bounds: defaults to None
-        :type bounds: Tuple[L, L], optional
+        :type bounds: Tuple[List[float], List[float]], optional
         :return: fitted parameters 
-        :rtype: L
+        :rtype: List[float]
         """
         if lowers is None:
             lowers = [0, 1e-3, -1e3]
@@ -511,7 +509,7 @@ class VoltageClampEstim(AbstractAnalyzer):
         """Take average of start and end capacitive transients"""
 
         cols = ['tau', 'R_a', 'R_m', 'C_m']
-        def _get_avg_df(params: List[L]) -> pd.DataFrame:
+        def _get_avg_df(params: List[List[float]]) -> pd.DataFrame:
             A = np.array(params)
             A = 0.5 * (A[::2] + A[1::2])
             return pd.DataFrame(A, columns=cols)
@@ -561,7 +559,7 @@ class VoltageClampEstim(AbstractAnalyzer):
         # average parameters
         return self.averageMemTestParams()
 
-    def estimate_RampCm(self, centerFrac: float) -> L:
+    def estimate_RampCm(self, centerFrac: float) -> List[float]:
         """Estimate membrane capacitance $C_m$ from symmetric voltage ramps"""
 
         data = self.__data

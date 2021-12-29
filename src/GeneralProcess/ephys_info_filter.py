@@ -3,7 +3,16 @@
 # This software is released under the MIT License.
 # https://opensource.org/licenses/MIT
 
-"""
+""" Filter `ephys_info.xlsx`
+This module provides methods to apply inclusion/exclusion criteria to `ephys_info.xlsx`. The module is tailored to ABF file formats and how I document my own experiments, but I have left plenty of room for extension.
+
+For example, `ExpParamCleaner`, out of the box, accepts different options for:
+    1. how to recognize file names 
+    2. how to recognize when multiple values are present in a single cell
+    3. column-specific ways to handle cells with multiple values 
+    4. names of columns to process using a 'whole-cell' paradigm or a 'seal parameter' paradigm
+
+Of course, a subclass can be written that overrides its methods. 
 
 """
 
@@ -123,15 +132,16 @@ class ExpParamCleaner:
         if item.lower() in ['x', 'nan']:
             return np.nan 
 
-        # see if there is a slash in the current cell value
-        slashes = self.multiple_wc_format.findall(item)
-        if slashes:
-            slashes = [float(x) for x in slashes]
+        # see if multiple values are present 
+        values = self.multiple_wc_format.findall(item)
+        
+        if values:
+            values = [float(x) for x in values]
         
             if agg_func is None:
-                return slashes 
+                return values 
             
-            return agg_func[slashes]
+            return agg_func[values]
         
         raise ValueError(
             f"{item} could not be parsed. If invalid, assign 'x' or 'nan'."

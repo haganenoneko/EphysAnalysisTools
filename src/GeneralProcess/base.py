@@ -8,7 +8,7 @@ from matplotlib import rcParams
 from matplotlib.backends.backend_pdf import PdfPages
 
 import logging, glob 
-from datetime import now 
+from datetime import datetime
 
 import numpy as np 
 import pandas as pd 
@@ -35,7 +35,7 @@ KwDict = Dict[str, Any]
 
 # ------------------------------- Base classes ------------------------------- #
 
-class Recording(BaseModel):
+class Recording:
     """Base class to hold data for individual recordings"""
     raw_data: pd.DataFrame
     name: str 
@@ -88,7 +88,7 @@ def createLogger(log_path: str, overwrite: bool=False, **log_kw) -> logging.Logg
         filename=file, encoding='utf-8', level=logging.DEBUG, **log_kw
     )
     
-    logging.info(f"Log file created at time: {now()}")
+    logging.info(f"Log file created at time: {datetime.now()}")
     
     return plog 
 
