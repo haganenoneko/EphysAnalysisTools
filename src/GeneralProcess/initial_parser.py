@@ -20,6 +20,20 @@ from pydantic import BaseModel, validator
 
 import pyabf
 
+"""Find CSV and ABF files that meet selection criteria
+This module contains classes and methods that specialize in
+    1. Applying, but not validating/reading, selection criteria
+    2. Finding files with given extensions and at given location(s)
+    
+The key class is `DataLoader`, which holds information such as
+    1. Raw data files (CSV, ABF)
+    2. Experimental parameters (e.g. series resistance, recording protocol name)
+    3. Paths to all files
+    
+An alternative use case would be to work with non-ABF file formats. To do so,
+implement a subclass of `DataLoader` and override the `getDataFiles` method.
+"""
+
 # -------------------------------- Find files -------------------------------- #
 
 
