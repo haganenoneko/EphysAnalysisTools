@@ -5,12 +5,10 @@ import numpy as np
 import math
 import glob
 
-import seaborn as sns
-from scipy.stats import describe
 
 ephys_info = r"C:\Users\delbe\Downloads\wut\wut\Post_grad\UBC\Research\lab\Github_repos\hcn-gating-kinetics\data\ephys_data_info.xlsx"
 
-# clean up experimental params
+
 
 
 def clean_up_params(df, unfiltered, return_paired_files=True, single=False):

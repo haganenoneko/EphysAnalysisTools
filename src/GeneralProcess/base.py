@@ -7,7 +7,7 @@ import matplotlib.pyplot as plt
 from matplotlib import rcParams
 from matplotlib.backends.backend_pdf import PdfPages
 
-import logging, glob, os 
+import logging, glob 
 from datetime import now 
 
 import numpy as np 
@@ -16,7 +16,8 @@ from pathlib import Path
 
 from abc import ABC, abstractmethod
 
-from typing import Dict, Any, List, Union, TypeVar, Tuple
+from typing import Dict, Any, List, Union, Tuple
+from typing import Callable, TypeVar
 
 import numpy.typing as npt 
 
@@ -134,6 +135,20 @@ def save_pdf(data: Recording, fig: plt.Figure) -> None:
     return 
 
 # ----------------------------- Simple functions ----------------------------- #
+
+def pprint_dict(
+    d: Dict[str, Any], delim: str="\n", func: Callable[[Any], Any]=None
+) -> str:
+    """Pretty printing for dictionaries"""
+    if func is None:
+        lst = [f"{k} = < {v} >" for k, v in d.items()]
+    else:
+        lst = [f"{k} = < {func(v)} >" for k, v in d.items()]
+    
+    return delim.join(lst)
+
+def _get_df_shape(df: pd.DataFrame) -> Tuple[int, int]:
+    return df.shape 
 
 def scalarTimesList(scalar: TNumber, lst: List[TNumber]) -> List[TNumber]:
     return [scalar*x for x in lst]
