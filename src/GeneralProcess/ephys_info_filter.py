@@ -198,3 +198,36 @@ class ExpParamCleaner:
                 
         self.df = df 
         
+def apply_inclusion_exclusion_criteria(
+    df: pd.DataFrame, col: str, criteria: List[List[str], List[str]]
+) -> pd.Series:
+    """Filter out files based on `criteria`, a nested list of row values to include or exclude, respectively
+
+    :param df: dataframe to filter
+    :type df: pd.DataFrame
+    :param col: column to filter
+    :type col: str
+    :param criteria: nested list containing row values to include or exclude. May be `None` or `['all']` to indicate that all values are included.
+    :type criteria: List[List[str]]
+    :return: filtered column of `df`
+    :rtype: pd.Series
+    """    
+    
+    if criteria is None:
+        return df.loc[:, col]
+    
+    # copy dataframe to be filtered
+    out = df.copy()
+    
+    # join criteria
+    masks = ["|".join(c) for c in criteria]
+
+    # inclusion
+    if masks[0] != "all":
+        out = out.loc[out[col].str.contains(masks[0], na=False)]
+
+    # exclusion
+    out = out.loc[~out[col].str.contains(masks[1], na=False)]
+
+    return out
+
