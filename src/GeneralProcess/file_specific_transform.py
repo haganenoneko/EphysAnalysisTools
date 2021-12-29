@@ -25,7 +25,7 @@ These constraints are:
 import numpy as np 
 import pandas as pd
 
-from typing import List, Tuple, Dict, 
+from typing import List, Tuple, Dict
 from typing import Callable, Union
 
 from abc import ABC, abstractmethod
@@ -39,7 +39,7 @@ from GeneralProcess.base import extendListAsArray
 
 # ------------------------------- Custom types ------------------------------- #
 
-TransformInput = Union[str, List[int], pd.DataFrame]
+TransformInput = Tuple[str, List[int], pd.DataFrame]
 TransformOutput = Tuple[List[int], pd.DataFrame]
 TransformType = Callable[[str, List[int], pd.DataFrame], TransformOutput]
 
@@ -136,12 +136,14 @@ def with_validation(
     epoch_inds, transformed = func(*args)
     validateColumns(args[2], transformed)
     validateVoltageRange(transformed, vlims=vlims)
-    validateRows(transformed)
+    validateRows(args[2], transformed)
     return epoch_inds, transformed 
 
 # -------------------------- Implemented transforms -------------------------- #
 
-def linearTransformEpochTimes(times: List[float], 
+@singledispatch
+def linTransEpochTimes(
+    times: List[float], 
     shift: Union[float, List[float]]=None, 
     scale: Union[float, List[float]]=None, 
     condition_on_sweep_index: Callable[[NDArrayInt], NDArrayBool]=None,
@@ -171,10 +173,24 @@ def linearTransformEpochTimes(times: List[float],
     if condition_on_value is None:
         return (arr + shift).tolist()
     
-    for (i, j), value in np.denumerate(arr):
+    for (i, j), value in np.ndenumerate(arr):
         
-        if not (condition_on_value(value) and dims[i,j]): continue 
+        if not (condition_on_value(value) and dims[i,j]): 
+            continue 
         
         arr[i, j] = value*scale[i, j] + shift[i, j] 
         
     return arr.tolist()
+
+D = Dict[str, List[List[float]]]
+@linTransEpochTimes.register
+def _(times: D, fname: str, **kwargs) -> D:
+    
+    if fname not in times:
+        return times 
+    
+    ts = times[fname]
+    for i, t in enumerate(ts):
+        ts[i] = linTransEpochTimes(t, **kwargs)
+        
+    return times 

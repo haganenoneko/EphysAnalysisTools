@@ -32,7 +32,9 @@ Each dataset consists of a CSV file and an ABF file. To hold these, we use the `
 - leak-subtracted dataframe
 - fitting results
 
-
-
+### static methods group logically related methods
+- `@staticmethod` is used abundantly to group methods that have a tight logical relationship
+## Comments
+- comments are sparse and/or one-liners, unless 
 ### Multiprocessing 
 After files are selected and `AbstractRecording`s are instantiated for each selected file, 

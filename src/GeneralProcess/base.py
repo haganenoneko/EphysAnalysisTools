@@ -7,14 +7,17 @@ import matplotlib.pyplot as plt
 from matplotlib import rcParams
 from matplotlib.backends.backend_pdf import PdfPages
 
+import logging, glob, os 
+from datetime import now 
+
 import numpy as np 
 import pandas as pd 
+from pathlib import Path
 
 from abc import ABC, abstractmethod
 
-from pydantic import BaseModel, ValidationError, validator
-
 from typing import Dict, Any, List, Union, TypeVar, Tuple
+
 import numpy.typing as npt 
 
 # ------------------------------- Custom types ------------------------------- #
@@ -65,40 +68,89 @@ class AbstractAnalyzer(ABC):
     
     @abstractmethod
     def extract_data(self, key: str) -> None:
-        pass 
+        pass         
 
-    @classmethod 
-    def save_pdf(cls: object, fig: plt.Figure) -> None:
+# ---------------------------------- Logging --------------------------------- #
+
+def createLogger(log_path: str, overwrite: bool=False, **log_kw) -> logging.Logger:
     
-        if '_data' not in cls.__dict__: 
-            return 
-        elif cls._data.attrs['pdf'] is None: 
-            return 
+    if log_path is None: 
+        return None 
+    
+    if overwrite:
+        file = log_path + "processing.log"
+    else:
+        n = len(glob.glob(log_path + "processing*.log"))
+        file = log_path + f"processing_{n}.log"
+    
+    plog = logging.basicConfig(
+        filename=file, encoding='utf-8', level=logging.DEBUG, **log_kw
+    )
+    
+    logging.info(f"Log file created at time: {now()}")
+    
+    return plog 
+
+# -------------------------------- I/O helpers ------------------------------- #
+
+def get_valid_paths(
+    paths: Union[List[str], List[Path]], 
+    relative_dir: Union[str, Path]=None
+) -> List[Path]:
+    
+    invalid_msg = f"{0} is an invalid directory or file."
+    valid_paths = [] 
+    
+    # set relative directory to cwd if not given 
+    if relative_dir is None:
+        relative_dir = Path.cwd()
+    
+    for p in paths:
         
-        pdf = cls._data.attrs['pdf']
-        pdf.savefig(fig, bbox_inches='tight')
-        plt.close(fig=fig)
+        if isinstance(p, str):
+            p = Path(p)
+
+        if p.is_dir() or p.is_file():
+            valid_paths.append(p)
+            continue 
         
+        p = relative_dir.joinpath(p)
+        if p.is_dir() or p.is_file(): 
+            valid_paths.append(p)
+        else:
+            logging.info(invalid_msg.format(p))
+        
+    return valid_paths 
+
+def save_pdf(data: Recording, fig: plt.Figure) -> None:
+
+    if 'pdf' not in data.__dict__:
         return 
-        
+    
+    pdf = data.attrs['pdf']
+    pdf.savefig(fig, bbox_inches='tight')
+    plt.close(fig=fig)
+    
+    return 
+
 # ----------------------------- Simple functions ----------------------------- #
 
 def scalarTimesList(scalar: TNumber, lst: List[TNumber]) -> List[TNumber]:
     return [scalar*x for x in lst]
 
-def extendListAsArray(lst: List[TNumber], dims: Tuple[int, int]) -> Union[NDArrayFloat, NDArrayInt]:
+def extendListAsArray(lst: List[TNumber], dims: Tuple[int, ...]) -> Union[NDArrayFloat, NDArrayInt]:
     
     elemType = type(lst[0])
-    lst = np.full((dims[0], len(lst)), lst, dtype=elemType)
+    ext = np.full((dims[0], len(lst)), lst, dtype=elemType)
     
-    if lst.shape == dims: 
-        return lst 
+    if ext.shape == dims: 
+        return ext 
     
-    extension = (0, dims[1] - lst.shape[1])
-    lst = np.pad(lst, ((0, 0), extension), 
-                    mode='constant', constant_values=lst[-1])
+    extension = (0, dims[1] - ext.shape[1])
+    ext = np.pad(ext, ((0, 0), extension), 
+                    mode='constant', constant_values=ext[-1])
     
-    return lst     
+    return ext     
 
 # define a single exponential
 def exp1(
