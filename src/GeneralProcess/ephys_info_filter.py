@@ -20,9 +20,12 @@ import pandas as pd
 import numpy as np 
 import math, logging 
 
-from typing import List, Dict, Union, Callable
+from typing import List, Dict, Tuple, Union, Callable, Any
+from GeneralProcess._ import clean_up_params
 
 from GeneralProcess.base import TNumber
+
+import os 
 
 import regex as re 
 
@@ -40,6 +43,10 @@ ABF_FILE_NAME_FORMAT: re.Pattern = re.compile(
     # 2 digits for date, 3 digits for recording
     r"(\d{2})([1-9|nod])([0-3][0-9])(\d{3})"
 )
+
+PCLAMP_DATE_FMT = re.compile(r"(\d{2})([ond0-9])(\d{2})(\d{3})")
+
+CriteriaType = Union[str, List[str], List[List[str]]]
 
 # ---------------------------------------------------------------------------- #
 
@@ -81,18 +88,7 @@ class ExpParamCleaner:
         self.multiple_wc_format = multiple_wc_format
         
         self.paired: Dict[str, List[Union[str, TNumber]]] = {} 
-        
-        self.validate_wc_agg_funcs()
-
-    def validate_wc_agg_funcs(self):
-        
-        for wc in self.wc:
             
-            if wc in self.wc_agg_funcs:
-                continue 
-            
-            self.wc_agg_funcs[wc] = None 
-    
     def validateDatePair(
         self, parent: Union[str, TNumber], child: Union[str, TNumber]
     ) -> bool:
@@ -241,3 +237,466 @@ def apply_inclusion_exclusion_criteria(
 
     return out
 
+class EphysInfoFiltering:
+    def __init__(
+        self, criteria: Dict[str, Any], EphysInfoPath: str,
+        column_types={'numeric':[], 'string':[]},
+        read_kwargs={'header':0, 'index_col':None},
+    ) -> None:
+        
+        if not os.path.isfile(EphysInfoPath):
+            raise FileNotFoundError(f"{EphysInfoPath} is not a valid file.")
+        
+        if 'header' not in column_types or\
+            'string' not in column_types:
+            raise KeyError(f"`column_types must have 'numeric' and 'string' keys. Current keys: {column_types.keys()}")
+        
+        ephys_info = self.read_data(EphysInfoPath, read_kwargs)
+        self.ephys_info = self.check_data(ephys_info, column_types)
+        
+        self.criteria = criteria 
+        
+    def read_data(self, path: str, **kwargs) -> pd.DataFrame:
+        """Read ephys info data and validate column types"""
+        # read file 
+        ext = os.path.splitext(path)
+        if ext == '.csv':
+            df = pd.read_csv(path, **kwargs)
+        else:
+            df = pd.read_excel(path, **kwargs)
+        
+        return df 
+        
+    def check_data(
+        self, df: pd.DataFrame, 
+        col_types: Dict[str, List[str]], infer=True
+    ) -> pd.DataFrame:
+        
+        # validate column types dict 
+        col_types = self.validate_column_types(col_types, df)
+        
+        df = self.apply_column_types(
+            df, col_types, infer=infer
+        )
+        
+        return df 
+    
+    @staticmethod
+    def validate_column_types(
+        df: pd.DataFrame,
+        col_types: Dict[str, List[str]]
+    ) -> Dict[str, List[str]]:
+        """Discard column names that are not in the data"""
+        
+        data_cols = df.columns
+        specified = [] 
+        
+        for typ, cols in col_types.items():
+            
+            if not cols:
+                if typ == 'numeric':
+                    cols = [
+                        'DNA (ng)', 'Transfection \nreagent (ul)',
+                        'OptiMEM (ul)', 'Time post-seed (h)',
+                        'Time post-transfection (h)', 'R_pp (M)', 
+                        'R_sl (G)', 'C_m (pF)', 'R_m (M)', 
+                        'R_sr (M)', 'Tau, +20 (pA)', 'Leak (pA)'
+                    ]
+                else: continue
+            
+            in_data = [c in data_cols for c in cols]
+            
+            if all(in_data): continue 
+            
+            col_types[typ] = [c for c in cols if c in data_cols]
+            specified.extend(col_types[typ])
+        
+        col_types['to_infer'] = [c for c in data_cols if c not in specified]
+        
+        return col_types
+    
+    def apply_column_types(
+        self, df: pd.DataFrame, 
+        col_types: Dict[str, List[str]], infer: bool
+    ) -> pd.DataFrame:
+                
+        str_cols = df.loc[:, col_types['string']]
+        df.loc[:, col_types['string']] = str_cols.astype(str)
+        
+        num_cols = df.loc[:, col_types['numeric']]
+        df.loc[:, col_types['numeric']] = num_cols.convert_dtypes(
+            convert_integer=True, convert_floating=True
+        )
+        
+        if infer and col_types['to_infer']:
+            infer_cols = df.loc[:, col_types['to_infer']]
+            df.loc[:, col_types['to_infer']] = infer_cols.convert_dtypes(
+                infer_objects=True)
+        
+        self.col_types = col_types
+        
+        return df 
+        
+    def filterDates(
+        self, df: pd.DataFrame, dates: CriteriaType=None
+    ) -> pd.DataFrame:
+        
+        for col in ['Files', 'Dates', 'Protocol']:
+            if col not in self.criteria: 
+                raise KeyError(f"{col} not in self.criteria, which has columns:\n{self.criteria.columns}")
+        
+        if dates is None:
+            dates = self.criteria["Dates"]
+
+        if not dates:
+            raise ValueError(f"No dates were selected. To process all dates, use ['dates' : ['all']]")
+        
+        if dates[0] == 'all' and len(dates) == 1:
+            logging.info("Selecting all dates.")
+            
+            df = df.loc[
+                    (df['Files'] != 'nan') &\
+                    (df['Protocol'] != 'nan')
+                ].reset_index(drop=True)
+
+            return df 
+        
+        # row indices of files to keep 
+        keep = [] 
+        
+        if all(isinstance(d, list) for d in dates):
+            if len(dates) == 2:
+                return apply_inclusion_exclusion_criteria(
+                    df, 'Files', dates
+                )
+            else:
+                raise ValueError(
+                    "Criteria < Dates > must be list of Strings, String, or list of [inclusion, exclusion] criteria."
+                )
+        
+        for date in dates:
+            if not isinstance(date, str):
+                try: 
+                    date = str(date)
+                except (TypeError, RuntimeError, ValueError):
+                    raise TypeError(
+                        f"Failed to convert file < {date} > to string."
+                    )
+            
+            # a `full` date is 8 characters long, regardless of month = YY M DD xxx, where M = {1-9, o, n, d}
+            # any entry in `dates` that is < 8 characters is interpreted as an attempt to index a collection of files, if present
+            if len(date) < 8:
+                matches = [i for (i, row) in enumerate(df['Files'])\
+                    if date in row]
+            else:
+                matches = [i for (i, row) in enumerate(df['Files'])\
+                    if date == row]
+                
+            if matches:
+                keep.extend(matches)
+
+        if keep: 
+            keep = list(set(keep))
+            keep.sort()
+        else:
+            raise ValueError(f"No files were selected.")
+
+        # apply selection
+        df = df.iloc[keep, :].loc[df['Protocol'] != 'nan'\
+            ].reset_index(drop=True)
+        
+        return df 
+    
+    def filterColumn(
+        self, df: pd.DataFrame, col: str, sel: CriteriaType
+    ) -> None:
+        
+        if sel == 'all':
+            return df 
+        
+        if col not in df.columns:
+            if col == 'Dates':
+                raise ValueError(
+                    "`FilterProtocol` was called to filter `Dates`, but `FilterDates` should be used instead."
+                )
+            elif 'Protocol' in col:
+                col = 'Protocol'
+                filterCol = df.loc[:, col]
+            else:
+                raise KeyError(f"{col} not in data columns:\n{df.columns}")
+        
+        if sel is None:
+            if col in self.criteria: 
+                sel = self.criteria[col]
+            else:
+                if col == 'Protocol':
+                    sel = self.criteria['Protocol_Name']
+                else:
+                    raise ValueError(f"No criteria values found for filtering on < {col} >.")
+        
+        # kwargs for `pd.Series.str.contains`
+        _str_kw = dict(case=False, na=False)
+        
+        if isinstance(sel, str):
+            return df.loc[filterCol.str.contains(
+                sel, **_str_kw)]
+                
+        if isinstance(sel, list):
+            if sel[0] == 'all':
+                return df 
+            
+            # inclusion, exclusion = [List[str], List[str]]
+            if len(sel) == 2 and\
+                all(isinstance(s, list) for s in sel):
+                return apply_inclusion_exclusion_criteria(
+                    df, col, sel
+                )
+            
+            # list of filenames = List[str] 
+            if all(isinstance(s, str) for s in sel):
+                if len(sel) == 1:
+                    return df.loc[filterCol.str.contains(
+                        sel[0], **_str_kw)]
+                
+                mask = '|'.join(sel)
+                return df.loc[filterCol.str.contains(
+                    mask, **_str_kw)]
+            
+        raise TypeError(f"Criteria values for criteria {col} must be type String, List[String], or a List[List[str], List[str]] of file dates to include and exclude:\n{sel}")
+
+    def apply_criteria(self) -> Tuple[List[str], pd.DataFrame]:
+
+        if not self.criteria: 
+            raise ValueError("No filtering criteria found.")
+
+        # read ephys_info dataframe
+        ei = self.ephys_info.copy()
+
+        for criteria, vals in self.criteria.items():
+            logging.info(f"\n    Filtering... {criteria} = {vals}")
+
+            if criteria.lower() == 'dates':
+                ei = self.filterDates(ei, vals)
+            
+            elif 'skip' in criteria.lower():
+                files_to_skip = self.criteria['Files_To_Skip']
+                logging.info(f"Skipping...\n{files_to_skip}")
+                
+                if files_to_skip:
+                    ei = ei.loc[~ei["Files"].isin(files_to_skip)]
+            
+            else:
+                logging.info(ei)
+                ei = self.FilterColumn(ei, criteria, sel=vals)
+            
+        if ei.shape[0] < 1:
+            raise Exception("No files found.")
+
+        ei.reset_index(drop=True, inplace=True)
+        logging.info(f"\n {ei.shape[0]} files found for these\
+            criteria...\n{ei.loc[:, ['Files', 'Protocol']]}")
+        
+        filenames = ei['Files'].values.tolist()
+
+        return filenames, ei
+    
+    @staticmethod
+    def format_paired_files(
+        df: pd.DataFrame, 
+        paired_files: Dict[str, List[str]]
+    ) -> Dict[str, List[str]]:
+        
+        """Format dictionary of paired files
+        Output has format
+        `{ parent filename : [subsequent filenames, [activation filenames]] }`
+        """
+    
+        # find activation protocol in protocols from the same cell
+        for parent, children in paired_files.items():
+            
+            # use a copy to avoid modifying the actual dictionary values
+            # insert name of parent file at the beginning 
+            _children = children.copy() 
+            _children.insert(0, parent)
+            
+            # find all protocols for children
+            protocols = df.loc[df['Files'].isin(children),
+                               ['Files', 'Protocol']]
+            
+            # filenames of recordings with activation protocols
+            _act = protocols.loc[protocols['Protocol'].\
+                str.contains('_act'), 'Files'].values.tolist()
+            
+            if _act: 
+                paired_files[parent].append(_act)
+
+        logging.info(f"\n Files recorded from the same cell...\
+            \n{paired_files}")
+        
+        return paired_files 
+    
+    def ExpParams(
+        self, df: pd.DataFrame,
+        exp_params: List[str] = ['R_pp (M)', 'R_sl (G)', 
+                                'C_m (pF)','R_m (M)', 'R_sr (M)']
+    ):
+        """Isolate experimental parameters"""
+
+        if 'Files' not in self.ephys_info.columns:
+            raise KeyError(f"'Files' not in data columns:\n\
+                {self.ephys_info.columns}")
+        
+        unfiltered = self.ephys_info.set_index('Files', drop=True)
+        exp_params = df.loc[:, exp_params].set_index(
+            'Files', drop=True)
+
+        # make sure experimental params are numbers
+        exp_params, paired_files = clean_up_params(
+            exp_params, unfiltered, single=True
+        )
+        
+        logging.info(
+            f"""
+            \n Corresponding experimental parameters...
+            \n {exp_params}
+            \n {pd.concat(
+                [exp_params.mean(), exp_params.sem(), exp_params.count()],
+                axis=0, keys=["Mean", "SEM", "Count"]
+            )}
+            """
+        )
+        
+        if not paired_files:
+            logging.info("No paired files were found. The first return variable is an empty list.")
+            return [], exp_params 
+                
+        paired_files = self.format_paired_files(paired_files)
+
+        return paired_files, exp_params
+    
+    def CreatePrefix(self, skip=True, exclusion=True):
+        """
+        Create file prefix from dictionary of filter criteria
+
+        Returns `prefix`, where intra-criteria entries are 
+        separated by `-` and different criteria types 
+        (e.g. Dates, Protocol) are separated by `__`
+        
+        `exclusion` = include exclusion criteria
+        `skip` = include skipped filenames
+        """
+
+        # Currently just assume every dict value is a List of Strings, but later add compatibility with nested List for exclusion criteria
+        
+        if all(isinstance(v, str) for v in self.criteria.values()):
+            return '__'.join(
+                ["-".join(v) for k, v in self.criteria.items()
+                if k != "Files_To_Skip"])
+        
+        prefix = []
+        
+        for criteria, vals in self.criteria.items():
+
+            if not skip and criteria == "Files_To_Skip":
+                continue
+
+            if isinstance(vals, str):
+                prefix.append(vals)
+                continue 
+            
+            if not isinstance(vals, list):
+                raise TypeError(f"Filter criteria must be type\
+                    str, or list, not {type(vals)}")
+            
+            if all(isinstance(x, str) for x in vals):
+                prefix.append("-".join(vals))
+            
+            elif all(isinstance(x, list) for x in vals)\
+                and len(vals) == 2:
+                
+                prefix_i = ''
+                
+                if len(vals[0]) > 1 and vals[0][0] != 'all':
+                    prefix_i = "-".join(vals[0][0])
+
+                if exclusion and len(vals[1]) > 1:
+                    prefix_i = "-!" + '-'.join(vals[1])
+
+                if len(prefix_i) > 1:
+                    prefix.append(prefix_i)
+                
+        prefix = "__".join(prefix)
+        return prefix
+    
+class FindPairedFiles:
+    """Convenience method to find paired files, given criteria in `fname`"""
+    
+    @staticmethod
+    def parseFileName(fname: str) -> tuple:
+        
+        # parse filename into Dates, Protocol, and "act_norm.csv"
+        parts = fname.split("__")
+        
+        if parts[2] != 'act_norm.csv':
+            raise ValueError(
+                f"Expected suffix to be 'act_norm.csv', got < {parts[2]} >"
+            )
+        
+        for i, part in enumerate(parts):
+            if '-' in part:
+                part = part.split('-')
+            else:
+                parts[i] = [part[i]]
+
+        return parts[0], parts[1] 
+
+    def find_dates_and_protocols(self, fname: str):
+        """
+        Find paired files by first parsing `fname` into Dates and Protocols, then using these to filter `ephys_info.xlsx`
+        """
+        # parse `fname`
+        if isinstance(fname, str):
+            dates, protcls = self.parseFileName(fname)
+            
+        elif isinstance(fname, list):
+            dates = []
+            protcls = []
+
+            # parse date and protocol for each filename in `fname` 
+            for f in fname:
+                d, p = self.ParseFName(f)
+                dates.append(d)
+                protcls.append(p)
+            
+        else:
+            raise TypeError(
+            f"Expected a String or List of Strings, got {type(fname)}")
+
+        return dates, protcls 
+    
+    def get_pairs(
+        self, fname: str, EphysInfoPath: str, **filter_kwargs
+    ) -> Dict[str, List[str]]:
+        """
+        `fname` is expected to have the following structure:
+            1. Dates separated by "-", followed by "__", then
+            2. Protocol name(s), separated by "-", followed by "__", then
+            3. "act_norm.csv"
+        """
+        
+        dates, protcls = self.find_dates_and_protocols(fname)
+        
+        criteria = {"Dates": dates, "Protocol_Name": protcls}
+        
+        filtor = EphysInfoFiltering(
+            criteria, EphysInfoPath, **filter_kwargs
+        )
+        
+        # apply filtering over Dates and Protocols
+        _, filtered = filtor.filter()
+        
+        # find paired files (included in extraction of 
+        # experimental parameters)
+        paired_files, _ = filtor.ExpParams(filtered)
+
+        return paired_files
