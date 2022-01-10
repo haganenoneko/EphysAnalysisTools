@@ -1,719 +1,1120 @@
-# file selection, filtering, etc. of `ephys_info` for processing
+import glob, math, os 
 
-import pandas as pd
+import matplotlib.patheffects as pe
+import matplotlib.pyplot as plt
 import numpy as np
-import math
-import glob
+import pandas as pd
+from matplotlib import rcParams
+from matplotlib.backends.backend_pdf import PdfPages
+
+from scipy.interpolate import UnivariateSpline
+from scipy.optimize import curve_fit, minimize, least_squares
+from scipy.stats import pearsonr, sem
+
+from GeneralProcess.ActivationCurves import multi_sort
 
 
-ephys_info = r"C:\Users\delbe\Downloads\wut\wut\Post_grad\UBC\Research\lab\Github_repos\hcn-gating-kinetics\data\ephys_data_info.xlsx"
-
-
-
-
-def clean_up_params(df, unfiltered, return_paired_files=True, single=False):
-    """
-    `df` = dataframe containing filenames as index, and [R_pp...R_sr] as columns \\
-    `unfiltered`= analogous to above, but from unfiltered original dataframe, used if `parent` file is not kept in filtering
-
-    `return_paired_files` = whether to return a dictionary specifying files that were recorded from the same cell (at least >1) \\
-    `single` = True -> ensures all dataframe elements are single numbers. \\
-    `single` = False -> entries with multiple numbers separated by `/` are parsed as a list
-
-    # Cateogry-specific rules for parsing entries when `single = True`:  \\
-    # R_pp and R_sl  \\
-    Either number or string corresponding to a filename.
-    1. If the filename is not in the index, raise Error.
-    2. Else, find the corresponding values of said file, and replace the entries accordingly.
-
-    # Cm, Rm, and Rsr   \\
-    If three values are given for Cm, Rm, or Rsr - this corresponds to values from:
-    1. `membrane test` (MT) before,
-    2. whole cell compensation (WCC, for Rsr and Cm) and seal test (for Rm), and
-    3. MT after the recording
-
-    If two values are given for Cm, Rm, or Rsr - this typically corresponds to MT before and after.
-
-    For Rsr and Cm, take the WCC value when available, or the mean.
-
-    For Rm,
-    - if 2 values are available, take the mean
-    - if 3 values are available, take the mean of the first and last
-    """
-    colnames = df.columns
-    pp = ['R_pp (M)', 'R_sl (G)']               # seal parameters
-    wc = ['C_m (pF)', 'R_m (M)', 'R_sr (M)']    # whole cell parameters
-
-    # dictionary of paired protocols, i.e. recorded from the same cell
-    # in a given {key : value}, the key is name of first recording, while values are names of subsequent
-    paired = {}
-
-    for idx in df.index.values:
-        # idx = ith filename
-
-        # iterate over columns (recording parameters)
-        for j, col in enumerate(colnames):
-            # value of (i,j)-th element in dataframe
-            df_ij = df.at[idx, col]
-
-            # convert to string; if filename, this is the filename of the `parent` file
-            s = str(df_ij)
-
-            # try converting value of current cell to a float;
-            # this may succeed if the parent filename is fully numeric
-            # if it is actually a parent file's name, we will change it to the parent's value below
-            try:
-                df.at[idx, col] = float(df_ij)
-
-            # if conversion to a float fails,
-            # we may have a filename (seal parameters) or multiple values (whole cell parameters)
-            except:
-                # if we have a whole cell parameter, split the cell by either \ or /
-                # then convert each resulting value into a float
-                # get a single value using procedure in docstring above
-
-                # see if current column is a whole cell parameter
-                if col in wc:
-
-                    if df.at[idx, col] == "x":
-                        print(
-                            "Invalid value `x` encountered in whole-cell parameters. Replacing with NaN")
-                        df.at[idx, col] = np.nan
-                        break
-
-                    # see if there is a slash in the current cell value
-                    if "/" in df_ij:
-                        x = df.at[idx, col].split("/")
-                        x = [float(u) for u in x]
-                    elif "\\" in df_ij:
-                        x = df.at[idx, col].split("\\")
-                        x = [float(u) for u in x]
-
-                    # return a single value
-                    if single:
-                        if len(x) == 2:
-                            df.at[idx, col] = sum(x)/2
-                        elif len(x) == 3:
-                            if col == wc[1]:
-                                df.at[idx, col] = (x[0]+x[-1])/2
-                            else:
-                                df.at[idx, col] = x[1]
-
-                    # return the list of values
-                    else:
-                        df.at[idx, col] = x
-
-            # conversion to a float can succeed if filenames are numeric, so
-            # we need to check seal parameters regardless (filenames aren't in whole-cell parameters)
-            if col in pp:
-
-                # check if (i,j)th cell is a filename using the following criteria
-                #   1. should have 8 characters
-                #   2. 18 < first two digits < 30, which represent years 2018 < year < 2030
-                #   3. characters are alphanumeric
-                if (len(s) == 8) and (18 < float(s[:2]) < 30) and s.isalnum():
-
-                    # if filtering removed `s` from the index, query the unfiltered dataframe
-                    # for simplicity, we query the unfiltered dataframe from the beginning
-                    if s in unfiltered.index:
-                        u = unfiltered.loc[s, :]
-                    else:
-                        raise Exception(
-                            " Tried querying unfiltered `ephys_info` for filename %s, but failed." % s)
-
-                    # if the referenced file `s` is the same as the current file `idx`, exit
-                    if s in df.index:
-                        if s == str(int(df.at[s, col])):
-                            print(df)
-                            raise Exception(
-                                "\n The current cell value is its own filename at index `%s`. \n You may need to change the original .xlsx file. Exiting. \n" % s)
-
-                    # set value of current cell to value of parent cell
-                    df.at[idx, col] = u.loc[col]
-
-                    # add to paired dictionary
-                    # if parent is already in the dictionary, append it to the list of derivative recordings
-                    if s in paired.keys():
-                        if idx not in paired[s]:
-                            paired[s].append(idx)
-
-                    # else, add a new entry with value being list containing current filename
-                    else:
-                        paired.update({s: [idx]})
-
-    if return_paired_files:
-        return df, paired
-    else:
-        return df
-
-
-def apply_inclusion_exclusion_criteria(df, col, criteria):
-    """
-    `df` is the dataframe to filter
-    `col` = column name to filter
-    `criteria` is a nested list containing [inclusion] and [exclusion] criteria
-
-    Returns filtered dataframe as a copy, `out`
-    """
-    # copy dataframe to be filtered
-    out = df.copy()
-
-    # create mask by joining inclusion and exclusion criteria in their separate lists
-    # masks[0] = inclusion criteria, masks[1] = exclusion criteria
-    masks = ["|".join(c) for c in criteria]
-
-    # inclusion
-    if masks[0] != "all":
-        out = out.loc[out[col].str.contains(masks[0], na=False)]
-
-    # exclusion
-    out = out.loc[~out[col].str.contains(masks[1], na=False)]
-
-    return out
-
-
-class EphysInfoFiltering():
-    def __init__(self, criteria, EphysInfoPath=ephys_info):
+class leak_subtract():
+    def __init__(self, ramp_times, khz=2, epochs=None, residual=False, ion_set=None):
         """
-        `criteria` = Dictionary containing criteria to direct filtering of `ephys_info` dataframe
-        `EphysInfoPath` = path to `ephys_info.xlsx`
+        `ramp_times` = [start, end], index values for voltage ramp  
+        `epochs` = times of epochs in the recording  
+        `pname` = name of protocol  
+        `residual` = whether to allow a residual ohmic leak current with different parameters 
+        'ion_set' = dictionary of solution compositions; {ion : [in, out]} for each ion 
         """
-        # ephys data info
-        ephys_info = pd.read_excel(EphysInfoPath, header=0, index_col=None)
-        # convert Files column into string
-        ephys_info = ephys_info.astype({'Files': 'str'})
-
-        # columns that may have numeric values
-        self.NumCols = ['DNA (ng)', 'Transfection \nreagent (ul)',
-                        'OptiMEM (ul)', 'Time post-seed (h)',
-                        'Time post-transfection (h)', 'R_pp (M)', 'R_sl (G)',
-                        'C_m (pF)', 'R_m (M)', 'R_sr (M)', 'Tau, +20 (pA)', 'Leak (pA)']
-
-        self.criteria = criteria
-        self.ephys_info = ephys_info
-
-    def criteria_msg(self, s):
-        return "Criteria %s must be list of Strings, String, or list of [inclusion, exclusion] criteria." % s
-
-    def FilterDates(self, EphysInfo, sel=None):
-        """
-        Apply filtering on dates
-        `sel` = date criteria. If None, indexes `self.criteria["Dates"]`
-        """
-
-        if sel is None:
-            dates = self.criteria["Dates"]
-        else:
-            dates = sel
-
-        if len(dates) < 1:
-            raise Exception(
-                " No dates were selected for exclusion. To process all dates, use {'dates' : ['all']}")
-
-        elif dates[0] == "all" and len(dates) == 1:
-            print(" Selecting `all` dates.")
-
-            # change type of protocol column to string to filter out nans
-            EphysInfo["Protocol"] = EphysInfo["Protocol"].astype(str)
-
-            # select every row in the ei spreadsheet if no NaNs are present
-            EphysInfo = EphysInfo.loc[
-                (EphysInfo["Files"] != 'nan') & (
-                    EphysInfo["Protocol"] != 'nan')
-            ].reset_index(drop=True)
-
-        else:
-            # row indices of files to keep
-            to_keep = []
-
-            # Each criteria value should be a List of Strings, or a nested List with two lists corresponding to [[inclusion], [exclusion]]
-            if all(isinstance(d, list) for d in dates):
-                if len(dates) == 2:
-                    return apply_inclusion_exclusion_criteria(EphysInfo, "Files", dates)
+        self.res = residual 
+        self.ramp_startend = ramp_times 
+        self.khz = khz 
+        self.epochs = epochs 
+        self.RT_F = (8.31446261815324*298)/(96.485)
+        self.transformed = False  
+        
+        # data 
+        self.ramp_df = None 
+        # number of sweeps 
+        self.N = None 
+        
+        # black border to plots of fitted leak current
+        self.line_border = [pe.Stroke(linewidth=5, foreground='k'), pe.Normal()]
+        
+        # dictionary of ion concentrations, {ion : [internal, external]}
+        if ion_set is None:
+            # self.ion_set = {"Na" : [14, 110], "K" : [135, 35], "Cl" : [141, 144.6]} 
+            self.ion_set = {"Na" : [10, 110], "K" : [130, 30], "Cl" : [141, 144.6]} 
+        elif ion_set == "HighK":
+            self.ion_set = {"Na" : [10, 135], "K" : [130, 5.4], "Cl" : [141, 144.6]} 
+        elif isinstance(ion_set, dict):
+            # assume only Na, K, and Cl permeate the membrane at rest 
+            ions = ["Na", "K", "Cl"]
+            
+            # test that Na, K, and Cl are provided 
+            if all(x in ion_set.keys() for x in ions):
+                if all(len(ion_set[x]) == 2 for x in ions):
+                    self.ion_set = ion_set
                 else:
-                    raise Exception(self.criteria_msg("Dates"))
+                    print("     Provided `ion_set` does not have 2 values (inside, outside concentrations) for each ion. Resorting to default. \n")
+                    print(ion_set)
+            else:
+                print("     Provided `ion_set` does not have one or more of Na, K, or Cl. Ensure the keys match exactly and that all are present. Resorting to default.")
+                print(ion_set)
+        else:
+            raise Exception("Type of `ion_set` must be Dict or accepted string, e.g. 'HighK.")
 
-            for d in dates:
-                # a `full` date is 8 characters long, regardless of month = YY M DD xxx, where M = {1-9, o, n, d}
-                # any entry in `dates` that is < 8 characters is interpreted as an attempt to index a collection of files, if present
-
-                if isinstance(d, str):
-                    n = len(d)
-                    if n < 8:
-                        # find indices of filenames that match the date `d`
-                        to_keep.extend([i for (i, x) in enumerate(
-                            EphysInfo["Files"].values) if d in x])
-                    else:
-                        to_keep.extend([i for (i, x) in enumerate(
-                            EphysInfo["Files"].values) if d == x])
+    def ohmic_leak(self, V_cmd, g_leak, E_leak, 
+                g_res=None, Vhold=None):
+        """
+        Fit ohmic leak equation: I_leak = g_leak * (V_cmd - E_leak)
+            where, 
+                g_leak = conductance of leak current (pA/mV)
+                V_cmd = command voltage (mV)
+                E_leak = reversal potential of leak current (mV)
+        
+            If residual=True, return residual leak current, I_res:
+                I_res = I_leak + g_res*(V_cmd - Vhold)
+                I_leak_total = I_res + I_leak
+            Where, 
+                g_res = conductance of residual leak current 
+                V_cmd[0] = reversal potential of residual leak, set to holding potential, which is initial voltage of voltage ramp     
+        """
+        if self.res:
+            return g_res*(V_cmd-Vhold) + g_leak*(V_cmd-E_leak)
+        else:
+            return g_leak * (V_cmd - E_leak)
+        
+    def ghk(self, v, x):
+        """
+        GHK current equation  
+        voltage `v`   
+        list of ion concentrations `x` = [internal, external]  
+        """
+        e = v/self.RT_F 
+        return 96.485*e*(x[0] - x[1]*math.exp(-e))/(1 - math.exp(-e))
+    
+    def ghk_leak(self, V, P_K):
+        """
+        Compute GHK leak equation.  
+        Besides P_K, free parameters are permeabilities for each ion w.r.t to that of K.  
+        
+        References for GHK equations:  
+        1. Johnston and Wu, p. 58  
+        2. Hille 2001, p. 473  
+        3. https://en.wikipedia.org/wiki/Goldman%E2%80%93Hodgkin%E2%80%93Katz_flux_equation  
+        """       
+        Na = self.ion_set["Na"]
+        K = self.ion_set["K"]
+        
+        # assume only K and Na permeate at rest and find P_Na / P_K 
+        # P_Na  
+        P_Na = P_K*(self.E*K[0] - K[1])/(Na[1] - self.E*Na[0])
+        
+        if isinstance(V, np.ndarray):
+            out = np.zeros(len(V))
+            
+            for i in range(len(V)):
+                if V[i] == 0:
+                    out[i] = 96.485* (P_K*(K[0] - K[1]) + P_Na*(Na[0] - Na[1]))
                 else:
-                    raise Exception(
-                        " Criteria can only be String or List of [Inclusion, Exclusion] criteria.")
-
-            if len(to_keep) > 0:
-                to_keep = list(set(to_keep))
-                to_keep.sort()
-            else:
-                raise Exception(
-                    " Number of files to keep based on dates is 0.")
-
-            # select files based on dates (rows indices in `to_keep`)
-            EphysInfo = EphysInfo.iloc[to_keep, :]
-            # ensure that Protocols are not nan
-            EphysInfo = EphysInfo.loc[EphysInfo["Protocol"]
-                                      != 'nan'].reset_index(drop=True)
-
-        return EphysInfo
-
-    def FilterColumn(self, EphysInfo, col, sel=None):
-        """
-        Apply filtering on a column of `EphysInfo`
-        `col` = name of column to filter, or key of `self.criteria`
-        `sel` = Protocol criteria. If None, indexes `self.criteria["Protocol_Name"]`
-        """
-
-        # extract column to filter as `C`
-        if col in self.ephys_info.columns:
-            # extract the filenames and column of interest from unfiltered data
-            C = self.ephys_info.loc[:, ["Files", col]]
-
-            # ensure uniform type String
-            C = C.astype(str).astype("string")
-            # convert any string nans to floats
-            C = C.replace('nan', np.nan).dropna()
-
-            # if filenames are in values of `col`, replace filenames with parent values
-            if any(C[col].isin(C["Files"])):
-
-                # set filenames as index
-                C.set_index("Files", drop=True, inplace=True)
-
-                # convert to string type if not expected to have numeric values
-                if col not in self.NumCols:
-                    C[col] = C[col].astype(str).astype("string")
-                    EphysInfo[col] = EphysInfo[col].astype(
-                        str).astype("string")
-
-                # replace filenames in column `col` of filtered df with parent value from unfiltered df
-                # using the unfiltered dataframe avoids errors where the parent row was filtered out
-                for i, s in enumerate(EphysInfo[col]):
-                    if s in C.index:
-                        EphysInfo[col].iat[i] = C.at[s, col]
-
-            # `pd.Series` containing values in column `col` after replacement
-            C = EphysInfo.loc[:, col]
-
+                    out[i] = P_K*self.ghk(V[i], K) + P_Na*self.ghk(V[i], Na)
+                    
+            return out 
+            
         else:
-            if col == "Dates":
-                raise Exception(
-                    "`FilterProtocol` was called to filter `Dates`, but `FilterDates` should be used instead.")
-            elif col == "Protocol_Name":
-                col = "Protocol"
-                C = EphysInfo.loc[:, "Protocol"]
+            if V == 0:
+                return 96.485*(P_K*(K[0] - K[1]) + P_Na*(Na[0] - Na[1]))
             else:
-                raise Exception(
-                    " Besides `Dates` and `Protocol_Name`, all keys in `filter_criteria` must be columns of `ephys_info.xlsx`.")
-
-        # extract filtering criteria from `self.criteria`, unless the values to select `sel` are given
-        if sel is None:
-            if col in self.criteria.keys():
-                v = self.criteria[col]
-            else:
-                if col == "Protocol":
-                    v = self.criteria["Protocol_Name"]
+                return P_K*self.ghk(V, K) + P_Na*self.ghk(V, Na)
+    
+    def ghk_leak_triple(self, V, P_K, P_Cl):
+        """
+        GHK equations for K+, Na+, and Cl-.  
+        P_K = absolute permeability for K+  
+        P_Cl = relative permeability p_Cl / P_K  
+        """
+        Na = self.ion_set["Na"]
+        K = self.ion_set["K"]
+        Cl = self.ion_set["Cl"]
+        
+        # relative permeability P_Na / P_K
+        P_Na = (1/(Na[1] - self.E*Na[0])) * ((self.E*K[0] - K[1]) + P_Cl*(self.E*Cl[1] - Cl[0]))
+        
+        if isinstance(V, np.ndarray):
+            out = np.zeros((len(V)))
+            for i in range(len(V)):
+                if V[i] == 0:
+                    out[i] = 96.485*(
+                        P_K*((K[0] - K[1]) + P_Na*(Na[0] - Na[1]) + P_Cl*(Cl[0] - Cl[1]))
+                    )
                 else:
-                    raise Exception(
-                        " Since criteria were not given, tried indexing `self.criteria` with `col` as a key, but failed. Try setting `col` as a key in `self.criteria`.")
+                    out[i] = 96.485*(
+                        P_K*(self.ghk(V[i], K) + P_Na*self.ghk(V[i], Na) + P_Cl*self.ghk(V[i], Cl))
+                    )
+            return out 
         else:
-            v = sel
-
-        # select matching row values
-        if isinstance(v, str):
-            if v == "all":
-                return EphysInfo
+            if V == 0:
+                return 96.485*(
+                    P_K*((K[0] - K[1]) + P_Na*(Na[0] - Na[1]) + P_Cl*(Cl[0] - Cl[1]))
+                )                
             else:
-                return EphysInfo.loc[C.str.contains(v, case=False, na=False)]
+                return 96.485*(
+                    P_K*(self.ghk(V, K) + P_Na*self.ghk(V, Na) + P_Cl*self.ghk(V, Cl))
+                )
+    
+    def fit_ghk_leak(self, i, v, mode="double"):
+        """
+        Fit GHK leak equation.  
+        `i` = current values, target  
+        `v` = voltage, input  
+        """
+        if mode == "double":
+            self.popt, c = curve_fit(self.ghk_leak, v, i, 
+                    p0 = [1e-5],
+                    bounds=([1e-8], [10])
+            )
+        elif mode == "triple":
+            self.popt, c = curve_fit(self.ghk_leak_triple, v, i, 
+                                p0 = [1e-5, 0.1],
+                                bounds=([1e-8, 1e-5], [1, 1])
+            )
+        else:
+            raise Exception("   In call to `fit_ghk_leak`, `mode` argument was %s, which was not understood. Currently supported are `mode='double'` and `mode='triple'` for Na/K and Na/K/Cl being the only permeable ions at rest, respectively." % mode)
+    
+    def ghk_get_permeability(self, x):
+        """
+        Return implicit permeabilities from fitting GHK equations to leak ramps.  
+        `x` = fit parameter(s). List of fit parameters for each trace.  
+            * For `mode='double'`, only Na+ and K+ are permeable. P_K is the only fit parameter, so each x[i] is length 1.  
+            * For `mode='triple'`, Na+, K+, and Cl- are permeable. P_K and P_Cl/P_K are the fit parameters, so each x[i] is length 2. P_Na is inferred from GHK voltage equation, and P_Cl is converted to absolute permeability via P_K * P_Cl.  
+        `ions` = dictionary of {ion name : [internal, external] concentrations} for each ion. Number of keys must match length of x[i].  
+        self.E = RMP*96.485/8.3145/298, where RMP is the resting membrane potential.  
+        
+        Returns  
+            * `out` = list of relevant absolute permeabilities, either [P_Na] for `mode = double` or [P_Na, P_Cl], for each trace in `self.ramp_df`  
+        """
+        
+        E = self.E 
+        K = self.ion_set["K"]
+        Na = self.ion_set["Na"]
+        
+        if isinstance(x, float):
+            return x*((E*K[0] - K[1])/(Na[1] - E*Na[0]))
+        
+        out = [] 
+        
+        if len(self.ion_set.keys()) < len(x[0]):
+            raise Exception("   In call to `ghk_get_permeability`, dictionary `self.ion_set` does not have the same number of keys as the fit parameters for the first trace. \n e.g. if only Na+ and K+ are permeable (`mode = 'double'`), then there is only one fit parameter, and `ions` should at least have keys 'Na' and 'K'.")
+        
+        if len(x[0]) == 1:
+            for i, P_K in enumerate(x):
+                out.append(P_K*(E*K[0] - K[1])/(Na[1] - E*Na[0]))
+        else:
+            Cl = self.ion_set["Cl"]
+            for i in range(len(x)):
+                P_K, P_Cl = x[i] 
+                
+                P_Na = (P_K/(Na[1] - E*Na[0])) * ((E*K[0] - K[1]) + P_Cl*(E*Cl[1] - Cl[0]))
+                out.append([P_K*P_Cl, P_Na])
+        
+        return out 
+        
+    def fit_ohmic_leak(self, i, v):
+        """
+        Fit ohmic leak equation to current and voltage
+            i = ramp current
+            v = ramp voltage 
+        """
+        
+        if self.res:
+            self.popt, c = curve_fit(self.ohmic_leak,
+                            v, i,
+                            p0 = [-1, -10, -1, -1],
+                            bounds = ([-15, -20, -15, -20], 
+                                    [15, 20, 15, 20])
+            )
+        else:
+            self.popt, c = curve_fit(self.ohmic_leak,
+                            v, i,
+                            p0 = [-1, -10],
+                            bounds = ([-15, -80], [15, 20])
+            )
+    
+    def get_leak_current(self, traceV, params, mode="ohmic"):
+        """
+        Calculate leak current for a trace given its voltage protocol.
+        traceV = command voltage  
+        """
+        if mode == "ohmic":
+            return self.ohmic_leak(traceV, *params)
+        elif mode == "double":
+            return [self.ghk_leak(v, *params) for v in traceV]
+        elif mode == "triple":
+            return [self.ghk_leak_triple(v, *params) for v in traceV]
+        else:
+            raise Exception("   `mode` argument not understood in call to `get_leak_current`. \n    %s was provided, but only 'ohmic', 'double', and `triple` are currently supported." % mode)
+            
+    def find_ramp(self, df, return_ramp=False, show_ramp=False):
+        """
+        df = dataframe or array containing current in columns [0...N], and voltage in columns [N+1...2*N]
+        return_params: if True, will return 
+            [fit_parameters, leak-subtracted df]
+        """
+        #convert numpy array to pandas dataframe 
+        if isinstance(df, np.ndarray):
+            df = pd.DataFrame(df)
+        elif isinstance(df, pd.DataFrame):
+            pass 
+        else:
+            print("`df` must be pd.DataFrame or np.ndarray")
+            raise TypeError
+        
+        #number of traces 
+        N = int(df.shape[1]/2)
+        self.N = N 
+        
+        # get start and end times for both arms of the ramp 
+        if len(self.ramp_startend) > 2:
+            # whether the protocol was 'transformed' or not 
+            self.transformed = True 
+            
+            # file-specific transform for leak ramp epochs returns a list of start and end times
+            ramp_epochs = self.ramp_startend
+            
+            if len(ramp_epochs)/2 != N:
+                print("Number of leak ramp epochs != number of traces.")
+            
+            # find ramp for each trace 
+            ramp_df = [] 
+            ramp_pro_df = [] 
+            for i in range(0, len(ramp_epochs), 2):
+                t0, t1 = ramp_epochs[i:i+2]
+                # print(ramp_epochs, df.shape[0])
+                
+                j = int(i/2)
+                ramp_df.append(df.iloc[t0:t1+1, j])
+                ramp_pro_df.append(df.iloc[t0:t1+1, N+j])
+            
+            # concatenate 
+            ramp_df = pd.concat(ramp_df, axis=1).apply(lambda x: pd.Series(x.dropna().values))
+            ramp_pro_df = pd.concat(ramp_pro_df, axis=1).apply(lambda x: pd.Series(x.dropna().values))
+            ramp_df = pd.concat([ramp_df, ramp_pro_df], axis=1)
+        else:
+            self.transformed = False 
+            
+            t0, t1 = self.ramp_startend
+        
+            # get dataframe of just the voltage ramps
+            # ramp_df = df.iloc[self.ramp_startend[0]:self.ramp_startend[1]+1, :]
+            ramp_df = df.iloc[t0:t1+1, :]
+                
+        if show_ramp:
+            plt.plot(df.iloc[self.ramp_startend[0]-100:self.ramp_startend[1]+101, :])
+            plt.show()
+            plt.close()
+            # exit()
+        
+        if return_ramp:
+            return ramp_df 
+        else:
+            self.ramp_df = ramp_df 
 
-        elif isinstance(v, list):
-            if v[0] == "all":
-                return EphysInfo
+    def apply_subtraction(self, leak_params):
+        """
+        Apply linear or GHK subtraction 
+        
+        Returns:
+        - subtracted = leak-subtracted current 
+        - fitted_ramps = fit of leak equation to leak ramps 
+        - r_values = pearson coefficients for fit to leak ramps 
+        """               
+        if self.ramp_df is None:
+            raise Exception("Tried calling `apply_subtraction` before `self.ramp_df` defined.")
+        
+        # subtract from just the ramp, and plot the fitted leak current; we do this separately from subtracting the entire recording for efficiency when we don't require visualization 
+        # compute current from fitted parameters for the voltage ramp
+        fitted_ramps = [] 
+        # compute pearson coefficient for each fitted ramp 
+        r_values = [] 
+                
+        # subtracted ramps 
+        subtracted = self.ramp_df.copy() 
+        # number of sweeps 
+        N = self.N 
+        
+        for i in range(N):
+            y = self.ramp_df.iloc[:,N+i].dropna().values 
+            
+            fitted_ramps.append(
+                self.get_leak_current(y, params=leak_params[i])
+            )
+            r_values.append(pearsonr(y, fitted_ramps[i])[0]) 
+            
+            # subtract from leak ramps 
+            if subtracted.shape[0] != len(y):
+                subtracted.iloc[:len(y),i] = self.ramp_df.iloc[:len(y), i] - fitted_ramps[i]                 
             else:
-                # nested list of inclusion, exclusion criteria
-                if all(isinstance(x, list) for x in v) and len(v) == 2:
-                    return apply_inclusion_exclusion_criteria(EphysInfo, col, v)
-
-                # list of strings
-                elif all(isinstance(x, str) for x in v):
-                    if len(v) > 1:
-                        # join strings with 'OR' operator into boolean mask
-                        mask = '|'.join(v)
-                        return EphysInfo.loc[C.str.contains(mask, case=False, na=False)]
-                    else:
-                        return EphysInfo.loc[C.str.contains(v[0], case=False, na=False)]
-                else:
-                    raise Exception(self.criteria_msg(col))
-        else:
-            raise Exception(self.criteria_msg(col))
-
-        raise Exception("   Filtering %s with criteria %s failed." % (v, col))
-
-    def filter(self):
+                subtracted.iloc[:,i] = self.ramp_df.iloc[:,i] - fitted_ramps[i]      
+        
+        return subtracted, fitted_ramps, r_values 
+    
+    def linear_subtraction(self, df, plot_results=False, pdfs=None):
         """
-        Apply criteria in `criteria` to filter `ephys_info`
-
-        `criteria` = dictionary with usual keys "Dates", "Files_to_Skip" and "Protocol_Name"
-
-        `criteria["Dates"]` is a List of Strings, or a List of Lists of Strings.
-            * The length of each String must be no greater than 8 characters (maximum length of any recording's filename).
-                - If the length is 8 characters, then it specifies a single recording to extract.
-                - If the length is less than 8 characters, then we search for a set of recordings that match the sub-string.
-                - Filenames have format `YY M DD xxx`, where `M` is month (1-9 for January-September, and 'o', 'n', and 'd' for October-December)
-            * A nested List of Strings is treated similarly. We choose not to flatten a nested list to allow for some list elements to be Strings themselves.
-
-        `criteria["Files_to_Skip"]` should be a List of Strings, each String being the full 8-character filenames to skip.
-
-        `criteria["Protocol_Name"]` is a String or a List of Strings corresponding to protocols to select.
-            * In either case, the String(s) may be full or partial names of protocols.
-            * To avoid including undesired files (e.g. which satisfy a protocol in `Protocol_Name` as a [sub]-string, and other criteria above), consider specifying such files in `Files_To_Skip`
-
-        Other keys in `criteria` must match the name of a column in `ephys_info.xlsx`. The values of these keys may be:
-            1. A String or List of Strings, if the column `dtype` is String
-            2. An Int/Float or List of Int/Float if the column `dtype` is Int/Float
-
-        Returns `filenames` and `ei`
-            * `filenames` = list of filenames from filtered dataframe
-            * `ei` = filtered ephys_info dataframe
+        Fit linear ohmic equation to leak ramps.  
+        `df` = original input dataframe  
+        `plot_results` = if True, shows leak parameters and subtracted output. 
         """
-        # read ephys_info dataframe
-        ei = self.ephys_info.copy()
-
-        if len(self.criteria.keys()) < 1:
-            raise Exception(
-                "Processing cannot proceed w/o filtering criteria. At least provide 'all' as the value for each key in the dictionary `criteria`.")
-
-        for k, v in self.criteria.items():
-            print("\n    Filtering... {k} = {v}".format(k=k, v=v))
-
-            if k == "Dates":
-                ei = self.FilterDates(ei, v)
-
-            elif k == "Files_To_Skip":
-                files_to_skip = self.criteria["Files_To_Skip"]
-                # print(" Skipping files specified in 'Files_To_Skip' \n ", files_to_skip)
-
-                if len(files_to_skip) > 0:
-                    ei = ei.loc[~ei["Files"].isin(files_to_skip)]
-
+        if self.ramp_df is None:
+            # print("     Cannot perform leak subtraction without `ramp_df`. Check arguments to `do_leak_subtraction.")
+            raise Exception(" Cannot perform leak subtraction without `ramp_df`. Check arguments to `do_leak_subtraction.`") 
+        
+        ramp_arr = self.ramp_df.values    # convert dataframe to np array 
+        N = self.N
+        tmp = df.copy() 
+                
+        leak_params = []    
+        for i in range(N):            
+            #fit leak ramp with ohmic leak equation 
+            if self.transformed:
+                y = self.ramp_df.iloc[:,[i, N+i]].dropna().values 
+                self.fit_ohmic_leak(y[:,0], y[:,1])
             else:
-                print(ei)
-                print(k)
-                print(v)
-                ei = self.FilterColumn(ei, k, sel=v)
+                self.fit_ohmic_leak(ramp_arr[:,i], ramp_arr[:,N+i])  
+            
+            # subtract from the entire trace 
+            leak_i = self.get_leak_current(df.iloc[:,N+i].values, self.popt)
+            tmp.iloc[:,i] -= leak_i 
+                        
+            leak_params.append(self.popt) 
+        
+        self.leak_params = leak_params
+        if plot_results:
+            self.PlotOhmic(ramp_arr, pdfs=pdfs)
+        
+        return tmp 
+    
+    def ghk_subtraction(self, df, mode="double", plot_results=False, pdfs=None):
+        """
+        Fit nonlinear GHK equation to leak ramps.  
+        `df` = original input dataframe  
+        `mode` = "double" for permeable Na and K, "triple" for Na/K/Cl  
+        `plot_results` = if True, shows leak parameters and subtracted output. 
+        """
+        if self.ramp_df is None:
+            raise Exception(" Cannot perform leak subtraction without `ramp_df`. Check arguments to `do_leak_subtraction.`") 
+        
+        if mode not in ["double", "triple"]:
+            raise Exception("   In call to `ghk_subtraction`, `mode = %s` was passed, but only `double` and `triple` are accepted." % mode)
+        
+        # reset leak parameters, if any 
+        self.leak_params = None 
+        # convert dataframe to np array 
+        ramp_arr = self.ramp_df.values    
+        
+        N = self.N 
+        tmp = df.copy() 
+        
+        leak_params = []         
+        for i in range(N):            
+            #fit leak ramp with ohmic leak equation 
+            if self.transformed:
+                y = self.ramp_df.iloc[:,[i, N+i]].dropna().values 
+                self.fit_ghk_leak(y[:,0], y[:,1], mode=mode)
+            else:
+                self.fit_ghk_leak(ramp_arr[:,i], ramp_arr[:,N+i], mode=mode)  
+    
+            leak_i = self.get_leak_current(df.iloc[:,N+i].values.tolist(), 
+                                            self.popt, mode=mode)
+            tmp.iloc[:,i] -= leak_i 
 
-        if ei.shape[0] < 1:
-            raise Exception("No files found.")
-
+            leak_params.append(self.popt) 
+        
+        self.leak_params = leak_params
+        if plot_results:
+            self.PlotGHK(ramp_arr, pdfs=pdfs)
+        
+        return tmp
+    
+    def PlotOhmic(self, ramp_arr, save_path=None, pdfs=None):
+        """
+        Plot parameters, fit, and subtracted current from using Ohmic equation
+        `ramp_arr` = self.ramp_df in array type 
+        `save_path` = path to save figures to
+        `pdfs` = PDF object
+        """
+        if self.ramp_df is None:
+            raise Exception("`PlotGHK` called before `self.ramp_df` set.")
+        
+        if self.leak_params is None:
+            raise Exception("`PlotGHK` called before leak parameters set.")
+        
+        if self.N is None:
+            N = int(self.df.shape[1]/2)
         else:
-            print("\n %d files found for these criteria..." % ei.shape[0])
-            ei.reset_index(drop=True, inplace=True)
-            print(ei.loc[:, ['Files', 'Protocol']])
-
-            # names of files
-            filenames = ei['Files'].values.tolist()
-
-            return filenames, ei
-
-    def ExpParams(self, EphysInfo):
-        """
-        Isolate experimental parameters from `EphysInfo` \\
-        Returns `exp_params`, a dataframe containing just floats for seal and whole-cell parameters, and `paired_files`, a dictionary that specifies recordings from the same cell, which has the following structure: `{ 'parent' filename : [file1, file2, file3, ..., [act1, act2, act3, ...]] }`.
-
-        Structure of `paired_files`:
-            `parent` is the first recording and contains the seal and experimental parameters in `ephys_info.xlsx`.
-            `file1`, `file2`, etc. are subsequent files recorded with non-activation protocols, and only have their whole-cell values specified in `ephys_info.xlsx`
-            `act1`, etc. are activation recordings from the same cell as above.
-            If
-        """
-
-        # use original dataframe (unfiltered) and extract experimental parameters
-        # retrieve experimental parameters with filenames as index
-        unfiltered = self.ephys_info.loc[:, [
-            'R_pp (M)', 'R_sl (G)', 'C_m (pF)', 'R_m (M)', 'R_sr (M)']]
-        unfiltered.index = self.ephys_info['Files']
-
-        # search for indices that are given in `EphysInfo` (filtered)
-        exp_params = EphysInfo.loc[:, [
-            'R_pp (M)', 'R_sl (G)', 'C_m (pF)', 'R_m (M)', 'R_sr (M)']]
-        exp_params.index = EphysInfo["Files"]
-
-        # make sure experimental params are numbers
-        exp_params, paired_files = clean_up_params(
-            exp_params, unfiltered, single=True)
-        print("\n Corresponding experimental parameters...")
-        print(exp_params)
-        print(pd.concat(
-            [exp_params.mean(axis=0), exp_params.sem(axis=0), exp_params.count(axis=0)],
-            axis=0, keys=["Mean", "SEM", "Count"]
-        ))
-
-        if len(paired_files.keys()) < 1:
-            print(
-                " No paired files were found. The second return variable is an empty list.")
-            return [], exp_params
-
+            N = self.N 
+            
+        fig = plt.figure(figsize=(12,6))
+        gs = fig.add_gridspec(2, 3)
+        
+        ax0 = fig.add_subplot(gs[0,0])
+        ax0.set_title(r"$\gamma_{\mathregular{leak}}$ (pS)")
+        # ax0.set_ylabel("pS", rotation=0, labelpad=18)
+        
+        ax1 = fig.add_subplot(gs[0,1])
+        ax1.set_title(r"$E_{\mathregular{leak}}$ (mV)")
+        # ax1.set_ylabel("mV", rotation=0, labelpad=10)
+        
+        ax2 = fig.add_subplot(gs[0,2])
+        ax2.set_title(r"$r^2$")
+        
+        ax3 = fig.add_subplot(gs[1, :])
+        ax3.set_ylabel(r"Current (pA)")
+                    
+        times = self.ramp_df.index
+        times -= times[0] 
+        
+        # plot pre-subtracted current 
+        ax3.plot(times, self.ramp_df.iloc[:,:N], marker='o', 
+                markersize=3, markevery=5, ls='none', 
+                c='gray', label="Original")
+        
+        ax3.set_xlabel("Time (ms)")
+        
+        # compute Pearson coefficient for recorded current vs. voltage ramp (NOT the fit!) 
+        # print(transformed)
+        if self.transformed:
+            r_values = [] 
+            # select ith leak ramp and remove NaNs
+            for i in range(N):
+                y = self.ramp_df.iloc[:,[i, N+i]].dropna().values 
+                r_values.append( pearsonr(y[:,1], y[:,0])[0] )
         else:
-
-            # find activation protocol in protocols from the same cell
-            for key, val in paired_files.items():
-                # use a copy to avoid modifying the actual dictionary values
-                tmp = val.copy()
-                # insert name of parent file at beginning of list of subsequent files
-                tmp.insert(0, key)
-
-                # find all protocols of filenames in `tmp`
-                prox = EphysInfo.loc[EphysInfo["Files"].isin(
-                    tmp), ["Files", "Protocol"]]
-                # find the indices of activation protocols in the above
-                act_ = np.where(prox["Protocol"].str.contains("_act"))
-                # corresponding filenames to list
-                act_ = prox["Files"].iloc[act_].values.tolist()
-
-                # append activation filenames to the end of the subsequent filenames for current cell
-                if len(act_) > 0:
-                    paired_files[key].append(act_)
-
-            print("\n Files recorded from the same cell...")
-            # { parent filename : [subsequent filenames, [activation filenames]] }
-            print(paired_files)
-
-            return paired_files, exp_params
-
-    def CreatePrefix(self, skip=True, exclusion=True):
-        """
-        Create file prefix from dictionary of filter criteria
-
-        Returns `prefix`, where intra-criteria entries are separated by `-` and different criteria types (e.g. Dates, Protocol) are separated by `__`
-        `exclusion` = include exclusion criteria
-        `skip` = include skipped filenames
-        """
-
-        # Currently just assume every dict value is a List of Strings, but later add compatibility with nested List for exclusion criteria
+            r_values = [pearsonr(ramp_arr[:,N+i], ramp_arr[:,i])[0] for i in range(N)] 
+        
+        # appearance of plotting for fit parameters 
+        FitKwargs = dict(marker='o', mec='k', ls='none', markersize=6)
+        
+        ax0.plot(range(N), [p[0] for p in self.leak_params], c='k', **FitKwargs)
+        ax1.plot(range(N), [p[1] for p in self.leak_params], c='k', **FitKwargs)
+        ax2.plot(range(N), r_values, c='orange', label="I-V", **FitKwargs)
+                    
+        # apply subtraction
+        # subtracted = leak-subtracted current 
+        # fitted_ramps = fit of leak equation to leak ramps 
+        # r_values = pearson coefficients for fit to leak ramps 
+        subtracted, fitted_ramps, r_values = self.apply_subtraction(self.leak_params)  
+        
+        # replace ramp current with leak-subtracted values 
+        self.ramp_df = subtracted 
+        
+        # plot Ohmic fit on top of leak ramp currents 
         try:
-            prefix = ["-".join(v) for k, v in self.criteria.items()
-                      if k != "Files_To_Skip"]
+            ax3.plot(
+                times, np.transpose(fitted_ramps), 
+                lw=1.5, c='blue', ls=':',
+                # path_effects=self.line_border,
+                label="Fit")
         except:
-
-            prefix = []
-            for k, v in self.criteria.items():
-
-                if not skip:
-                    if k == "Files_To_Skip":
-                        continue
-
-                if isinstance(v, str):
-                    prefix.append(v)
-                elif all(isinstance(x, str) for x in v):
-                    prefix.append("-".join(v))
-                elif all(isinstance(x, list) for x in v) and len(v) == 2:
-                    s = ""
-
-                    if len(v[0]) > 1:
-                        if v[0][0] == "all":
-                            pass
-                        else:
-                            s += "-".join(v[0])
-
-                    if exclusion:
-                        if len(v[1]) > 1:
-                            s += "-!"
-                            s += "-".join(v[1])
-
-                    if len(s) > 1:
-                        prefix.append(s)
-
+            for i in range(len(fitted_ramps)):
+                y = fitted_ramps[i] 
+                times =self.ramp_df.iloc[:,i].dropna().index 
+                
+                if i == 0:
+                    ax3.plot(times, y, lw=2, c='yellow', 
+                        path_effects=self.line_border,
+                        label="Fit")
                 else:
-                    raise Exception(
-                        "\n Tried creating prefix by joining each value in `criteria` with '-'. If this didn't work, one of the values might be a nested list that doesn't follow [inclusion, exclusion] format.")
-
-        prefix = "__".join(prefix)
-        return prefix
-
-    def frequency_plots(self, df):
-        """
-        Use `pd.Series.value_counts` to create histogram for each column in `df` if > 4 unique values, otherwise use pie plot \\
-        """
-        N = int(math.ceil(df.shape[1]/3))
-        fig, ax = plt.subplots(3, N, figsize=(14, 6))
-
-        cols = df.columns
-
-        k = 0
-        for i in range(3):
-            for j in range(N):
-                # empty unused plots
-                if k > df.shape[1]:
-                    ax[i, j].axis("off")
-                    continue
-
-                # column name
-                c = cols[k]
-
-                # filter construct names to consider identity up to `pcDNA3`, and exclude `GFP`
-                if c == "Construct":
-                    s = pd.Series([x.split(" ")[:-1] for x in df.iloc[:, i]])
-                    freq = s.value_counts()
-                else:
-                    freq = df.iloc[:, i].value_counts()
-
-                if freq.shape[0] < 5:
-                    ax[i, j].pie(
-                        freq, labels=freq.index.values.tolist(), autopct="%.1f")
-                    ax[i, j].set_frame_on(False)
-                else:
-                    nbins = int(math.ceil(freq.shape[0]/10))*5
-                    ax[i, j].hist(freq, bins=nbins)
-
-                    if freq.shape[0] <= 10:
-                        ax[i, j].set_xticks(np.linspace(0, 1, freq.shape[0]))
-                        ax[i, j].set_xticklabels(freq.index)
-                    else:
-                        ax[i, j].set_xticklabels(freq.index)
-
-                k += 1
-
-        plt.tight_layout()
-        plt.show()
-        plt.close()
-
-    def FillDates(self, df):
-        """
-        Fill empty cells in "Date" column with previous non-empty cell's value using forward fill (`ffill`) method in `pd.DataFrame.fillna` \\
-        Returns filled `Dates` as `pd.Series`
-        """
-        if "Date" in df.columns:
-            dates = df.loc[:, "Date"]
-            dates.fillna(method="ffill", inplace=True)
+                    ax3.plot(times, y, lw=2, c='yellow', 
+                        path_effects=self.line_border,
+                        label=None)
+        
+        # r_values = [pearsonr(ramp_arr[:,N+i], fitted_ramps[i])[0] for i in range(N)]
+        ax2.plot(range(N), r_values, c='k', label="Fit-I", **FitKwargs)
+        
+        h, l = ax2.get_legend_handles_labels()
+        ax2.legend(h[:2], list(set(l)), loc='upper right', bbox_to_anchor=[1.65, 1])
+        
+        ax3.plot(times[::5], self.ramp_df.iloc[::5,:N], 
+                lw=2, c='r', label="Subtracted")
+        ax3.set_xlabel("Time (ms)")
+                    
+        h, l = ax3.get_legend_handles_labels()
+        ax3.legend([h[0], h[N], h[-1]], [l[0], l[N], l[-1]], 
+                loc='upper right', bbox_to_anchor=[1.19, 1])
+        ax3.locator_params(axis='x', nbins=5)
+        ax3.locator_params(axis='y', nbins=5)
+        
+        # if more than 6 traces, make every 2nd label empty
+        if N > 6:
+            xlabs = [""]*N 
+            for j in range(0, N, 2):
+                xlabs[j] = j+1 
         else:
-            raise Exception(
-                "   No 'Date' column in `df`. This is needed for `FillDates`.")
-
-        return pd.to_datetime(dates, format="%d-%m-%Y", errors='coerce')
-
-    def do_stats(self, indep="all"):
-        """
-        Given criteria in initialization of class, visualize and/or run statistics on independent variable(s) in `indep`
-        """
-        if not isinstance(indep, list):
-            raise Exception(
-                " Independent variables in `indep` must be List of Strings.")
-
-        # filenames of and filtered ephys_info
-        fnames, filtered = self.filter()
-        print(filtered)
-
-        # get dates of the filtered dataframe by indexing filled dates of unfiltered dataframe with indices of filtered dataframe
-        fdates = self.FillDates(self.ephys_info).iloc[filtered.index, :]
-
-        # difference in rows
-        print(" {x1} of {x2} rows ({x3}) remain after filtering `ephys_info.xlsx`.".format(
-            x1=filtered.shape[0], x2=self.ephys_info.shape[0], x3=(filtered.shape[0]/self.ephys_info.shape[0]))
-        )
-
-        # `NumericState` tracks whether all (0), some (0.5), or none (1) of `indep` are numeric.
-        # -1 is reserved for when a complete analysis of all variables is desired
-        if indep == "all":
-            NumericState = -1
-        else:
-            # check whether independent variable(s) are expected to have numeric values
-            IsNumeric = [j in self.NumCols for j in indep]
-
-            if all(isNumeric):
-                print(" All independent variables are numeric.")
-                NumericState = 0
+            xlabs = range(1, N+1)    
+        
+        # tick appearance
+        for a in [ax0, ax1, ax2]:
+            a.set_xticks(range(N))
+            a.set_xticklabels(xlabs)
+            a.set_xlabel("Sweep #")            
+                        
+        for a in [ax0, ax1, ax2, ax3]:
+            ybot, ytop = a.get_ylim()
+            if ytop == 1:
+                a.set_ylim(ybot - 0.05, ytop + 0.05) 
             else:
-                if any(isNumeric):
-                    print(
-                        " Independent variables include numeric and non-numeric data.")
-                    NumericState = 0.5
-                else:
-                    print(" All independent variables are non-numeric.")
-                    NumericState = 1
-
-        if NumericState < 1:
-            _, ExpParams = self.ExpParams(filtered)
-
-            # pair plot of experimental parameters
-            pp = sns.pairplot(ExpParams)
-
-        # pie chart and histogram for categorical data
-        # box plot and histogram for numerical data
-        # time series for each
-
+                dy = (ytop - ybot)*0.05                 
+                a.set_ylim(ybot - dy, ytop + dy) 
+            
+        fig.suptitle("Fitting of Linear Voltage Ramps")
+        plt.tight_layout(rect=[0, 0.03, 1, 0.95])
+        
+        if pdfs is not None:
+            pdfs.savefig(bbox_inches='tight')
+            
+        if save_path is not None:
+            plt.savefig(save_path, bbox_inches='tight', dpi=300)
+            
         plt.show()
-
-
-class FindPairedFiles():
-    def __init__(self, fname):
+        plt.close() 
+    
+    def PlotGHK(self, ramp_arr, mode='double', pdfs=None):
         """
-        Convenience method to find paired files, given criteria in `fname`
-        `fname` is expected to have the following structure:
-            1. Dates separated by "-", followed by "__", then
-            2. Protocol name(s), separated by "-", followed by "__", then
-            3. "act_norm.csv"
+        Plot parameters, fit, and subtracted current from using GHK equation
+        `ramp_arr` = self.ramp_df in array type 
+        `pdfs` = PDF object
         """
-        self.fname = fname
-
-    def ParseFName(self, f):
-        """
-        `f` is an `fname` described in `__init__`. The parsing function is defined separately so that it can be called repeatedly when `fname` is a list of filenames
-        """
-        # parse filename into Dates, Protocol, and "act_norm.csv"
-        sub1 = f.split("__")
-        if sub1[-1] != "act_norm.csv":
-            raise Exception(
-                "   `f` may not be formatted correctly. Expected 'act_norm.csv'. \n", sub1)
-
-        if "-" in sub1[0]:
-            dates = sub1[0].split("-")
+        if self.ramp_df is None:
+            raise Exception("`PlotGHK` called before `self.ramp_df` set.")
+        
+        if self.leak_params is None:
+            raise Exception("`PlotGHK` called before leak parameters set.")
+        
+        if self.N is None:
+            N = int(self.df.shape[1]/2)
         else:
-            dates = [sub1[0]]
-
-        if "-" in sub1[1]:
-            protcls = sub1[1].split("-")
+            N = self.N 
+        
+        f = plt.figure(figsize=(14, 6))
+        gs = f.add_gridspec(2, 7)
+        
+        # ion permeability values for K 
+        ax0 = f.add_subplot(gs[0,:3])
+        ax0.set_ylabel(r"$P_K$", rotation=0, labelpad=14)
+                    
+        # correlation coefficient 
+        ax1 = f.add_subplot(gs[1,:3])
+        ax1.set_ylabel("I(V)\n %s" % r"$r^2$", rotation=0, labelpad=14)
+        ax1.set_xlabel("Sweep Number")
+        
+        # leak subtracted ramp 
+        ax2 = f.add_subplot(gs[:,3:])
+        ax2.set_ylabel(r"Current (pA)")
+        ax2.set_xlabel("Time (ms)")
+                    
+        times = self.ramp_df.index
+        ax2.plot(times, self.ramp_df.iloc[:,:N], lw=2, alpha=0.5, c='r', label="Original")
+        
+        # compute Pearson coefficient for recorded current vs. voltage ramp (NOT the fit!) 
+        # print(transformed)
+        if self.transformed:
+            r_values = [] 
+            # select ith leak ramp and remove NaNs
+            for i in range(N):
+                y = self.ramp_df.iloc[:,[i, N+i]].dropna().values 
+                r_values.append( pearsonr(y[:,1], y[:,0])[0] )
         else:
-            protcls = [sub1[1]]
+            r_values = [pearsonr(ramp_arr[:,N+i], ramp_arr[:,i])[0] for i in range(N)] 
+        ax1.plot(range(N), r_values, marker='o', ls='none', label="I-V")
+        
+        # plot permeability for inferred permeabilities on separate y-axis
+        ax0_inf = ax0.twinx()
+        # get inferred permeabilities 
+        P_inf = self.ghk_get_permeability(self.leak_params)
+        
+        if mode == "double":
+            # plot permeability for K
+            ax0.plot(range(N), self.leak_params, marker='o', ls='-', alpha=0.6, c='r',
+                    markersize=6, label=r"$K^{+}$")  
+            # ax0.axhline(np.mean(self.leak_params), c='r', lw=2, alpha=0.5, label=None)
+        
+            ax0_inf.set_ylabel(r"$P_{Na}$", rotation=0, labelpad=14)
+        
+            # plot permeability for Na on a separate y-axis 
+            ax0_inf.plot(range(N), P_inf, marker='o', ls='-', alpha=0.6, 
+                    c='lightblue', markersize=6, label=r"$Na^{+}$")
+            # ax0.axhline(np.mean(P_inf), c='r', lw=2, alpha=0.5, label=None)
 
-        return dates, protcls
-
-    def Find(self):
-        """
-        Find paired files by first parsing `fname` into Dates and Protocols, then using these to filter `ephys_info.xlsx`
-        """
-        # parse `fname`
-        if isinstance(self.fname, str):
-            dates, protcls = self.ParseFName(self.fname)
-        elif isinstance(self.fname, list):
-            dates = []
-            protcls = []
-
-            # parse each filename in `fname` for Dates and Protocols, then append to respective lists without duplication
-            for f in self.fname:
-                d, p = self.ParseFName(f)
-
-                if d not in dates:
-                    dates.append(d)
-
-                if p not in protcls:
-                    protcls.append(p)
         else:
-            raise Exception(
-                "   Type of `self.fname` not understood. Expected a String or List of Strings. Given ", type(self.fname))
+            P_K = [x[0] for x in self.leak_params]
+            P_Na = [x[0] for x in P_inf]
+            P_Cl = [x[1] for x in P_inf]
+            
+            # plot permeability for K
+            ax0.plot(range(N), P_K, marker='o', ls='-', alpha=0.6, c='r', markersize=6, label=r"$K^{+}$")  
+            # ax0.axhline(np.mean(P_K), c='r', lw=2, alpha=0.5, label=None)
+            
+            ax0_inf.set_ylabel(r"$P_{Na}$" + "\n" + r"$P_{Cl}$", rotation=0, labelpad=14)
+            
+            ax0_inf.plot(range(N), P_Na, marker='o', ls='-', alpha=0.6, c='lightblue', markersize=6, label=r"$Na^{+}$")
+            # ax0_inf.axhline(np.mean(P_Na), c='lightblue', lw=2, alpha=0.5, label=None)
+            
+            ax0_inf.plot(range(N), P_Cl, marker='o', ls='-', alpha=0.6, c='yellow', markersize=6, label=r"$Cl^{-}$")
+            # ax0_inf.axhline(np.mean(P_Cl), c='y', lw=2, alpha=0.5, label=None)
+                                            
+        # scientific notation for y axis ticks 
+        ax0.ticklabel_format(axis='y', scilimits=(-2, 2))
+        ax0_inf.ticklabel_format(axis='y', scilimits=(-2, 2))
+        
+        # add legend for permeabilities plot 
+        h0, l0 = ax0.get_legend_handles_labels()
+        h0_inf, l0_inf = ax0_inf.get_legend_handles_labels()
+        ax0.legend(h0+h0_inf, l0+l0_inf, loc='center right')
+            
+        # subtracted = leak-subtracted current 
+        # fitted_ramps = fit of leak equation to leak ramps 
+        # r_values = pearson coefficients for fit to leak ramps 
+        subtracted, fitted_ramps, r_values = self.apply_subtraction(self.leak_params)
+            
+        # pearson correlation between fit and data 
+        ax1.plot(range(N), r_values, marker='o', fillstyle='none', ls='none', label="Fit-I")
+        
+        # xticks for N traces, plus 3 empty ticks for in-plot legends
+        xpos = range(N+int((3/8)*N))
+        xlabs = list(range(1, N+1))
+        xlabs.extend([""]*int((3/8)*N))
+        
+        # apply xtick positions and labels
+        ax0.set_xticks(xpos)
+        ax0_inf.set_xticks(xpos)
+        ax1.set_xticks(xpos)
+        
+        ax0.set_xticklabels([])
+        ax0_inf.set_xticklabels([])            
+        ax1.set_xticklabels(xlabs)
+        
+        # volts = self.ramp_df.iloc[:, N+i].dropna()                
+        times = self.ramp_df.iloc[:,i].dropna().index 
+        try:
+            ax2.plot(times, np.transpose(fitted_ramps), 
+                lw=2, c='yellow', alpha=0.8, path_effects=self.line_border, label="Fit")
+        except:
+            for i in range(len(fitted_ramps)):
+                y = fitted_ramps[i] 
+                ax2.plot(times, y, lw=2, c='yellow', alpha=0.8, 
+                        path_effects=self.line_border, label="Fit")                                    
+                
+        # plot subtracted current 
+        ax2.plot(times[::5], subtracted.iloc[::5,:N], lw=2, alpha=0.5, 
+                c='lightblue', label="Subtracted")
+                    
+        h, l = ax1.get_legend_handles_labels()
+        ax1.legend(h[:2], list(set(l)), loc='center right', framealpha=0.5)
+                    
+        h, l = ax2.get_legend_handles_labels()
+        ax2.legend([h[0], h[N], h[-1]], [l[0], l[N], l[-1]], loc='lower center', ncol=3)
+        ax2.locator_params(axis='x', nbins=5)
+        ax2.locator_params(axis='y', nbins=5)
+                        
+        for a in [ax0, ax1, ax2]:
+            ybot, ytop = a.get_ylim()
+            if ytop == 1:
+                a.set_ylim(ybot - 0.1, ytop + 0.1) 
+            else:
+                dy = (ytop - ybot)*0.2
+                a.set_ylim(ybot - dy, ytop + dy) 
+            
+        f.suptitle("Fitting of Linear Voltage Ramps with GHK")
+        plt.tight_layout(rect=[0, 0.03, 1, 0.95])
+        
+        if pdfs is not None:
+            pdfs.savefig(bbox_inches='tight')
+            
+        if save_path is not None:
+            plt.savefig(save_path, bbox_inches='tight', dpi=300)
+            
+        plt.show()
+        plt.close() 
+    
+    def check_quality(self, original, df, show=False):
+        """
+        Assess quality of leak subtraction.  
 
-        # initialize class object with criteria given by `fname`
-        F = EphysInfoFiltering({"Dates": dates, "Protocol_Name": protcls})
-        # apply filtering over Dates and Protocols
-        _, Filtered = F.filter()
-        # find paired files (included in extraction of experimental parameters)
-        paired_files, _ = F.ExpParams(Filtered)
+        Compute linearity for fit by: 1 - sum(x - mu)^2 / sum(x^2), where `x` is the leak-subtracted data and the horizontal line `y = mu` is the mean of the data, our expected outcome of a perfect subtraction. Current threshold for 'good' subtraction is R^2 > 0.1.    
+        
+        `original` = original data, pre-subtraction  
+        `df` = output of `self.do_leak_subtraction`  
+        
+        Returns True if quality is acceptable, False otherwise.  
+        show = if True, returns an I-V plot for leak ramps + the zero-current region chosen.
+        """
+        # the first epoch should have zero current
+        N = self.N 
+            
+        # extract leak ramp from un-subtracted data 
+        # ramp_df_raw = self.find_ramp(original, return_ramp=True)
+        
+        E = 0 
+        for i in range(N):
+            # y_raw = ramp_df_raw.iloc[:,i].dropna().values 
+            y_fit = self.ramp_df.iloc[:,i].dropna().values ** 2
+            
+            E += 1 - np.mean(y_fit / (max(y_fit) - min(y_fit)))
+        
+        E *= 1/N
+        # print(E)
+        # exit()
+        
+        if E > 0.9:
+            print("     Leak subtraction is acceptable.\n    Mean R^2 is %.3f. The threshold is > 0.9." % E)
+            return True 
+        else:
+            print("     Leak subtraction is unacceptable.\n      Mean R^2 is %.3f. The threshold is > 0.9." % E)
+            return False 
+    
+    def do_leak_subtraction(self, df, method="ohmic", return_params=False, 
+                            plot_results=False, pdfs=None):
+        """
+        Perform leak subtraction.  
+        
+        `method` = if `"ohmic"`, fits linear ohmic equation to leakage ramps. If `"ghk"`, fits a GHK equation instead. `ghk` assumes only K+ and Na+ permeate. Support for K+, Na+, and Cl- is available by passing `method=ghk_triple`.  
+        `return_params` = whether to return leak-subtraction parameters. For `method=linear`, these are parameters to `ohmic_leak`. If a linear fit fails, or if `method=spline`, returns a UnivariateSpline object.  
+        `plot_results` = whether to show parameters and/or leak-subtracted output  
+        `pdfs` = multipage PDFs object to append figures to. Only if `plot_results = True`. 
+        """
+        # finds leakage ramp and saves isolated current/voltage as a class variable
+        self.find_ramp(df)
+                
+        if method == "ohmic":
+            out = self.linear_subtraction(df, plot_results=plot_results, pdfs=pdfs)
+            self.check_quality(df, out, show=plot_results)
+            
+        elif "ghk" in method:
+            print("     `ghk` selected for linear subtraction method. \n")
+            
+            # first fit a linear equation to get reversal potential 
+            self.linear_subtraction(df, plot_results=False, pdfs=None)
+            # set reversal potential to be the mean from linear fit to each trace 
+            self.E = math.exp(np.mean([x[1] for x in self.leak_params])/self.RT_F) 
+            
+            # fit P_K in GHK current equation 
+            # permeable to Na, K, and Cl 
+            if "triple" in method:
+                out = self.ghk_subtraction(df, mode='triple', 
+                                        plot_results=plot_results, pdfs=pdfs)
+            # permeable to Na and K only 
+            else:
+                out = self.ghk_subtraction(df, mode='double', 
+                                        plot_results=plot_results, pdfs=pdfs)    
+            
+            self.check_quality(df, out, show=plot_results)
+        
+        return out 
 
-        return paired_files
+    def get_leak_params(self):
+        return self.leak_params 
+    
+    def IV_analysis(self, df_i, df_v, Cm, khz=2, w=5, plot_results=False, output=False, pdfs=None):
+        """
+        Find reversal potential, ion permeabilities, and linear fit from instantaneous current.  
+        
+        `df_i` = extracted epoch of leak-subtracted current       
+        `df_v` = corresponding voltage command  
+        `khz` = sampling frequency, in khz  
+        `w` = starting from the start of each trace, time window to determine instantaneous current, in ms  
+        `Cm` = membrane capacitance; if given a plot of current density will also be produced  
+        
+        ## Output  
+        `plot_results` = if True, visualizes I-V and (I/Cm)-V with linear fits, labelled with Cm and permeability values.  
+        `output` = if True, returns array of computed values - (reversal, P_K, P_Na, P_Na/P_K, Iinst, Iinst/Cm)  
+        `pdfs` = if `plot_results = True` and `pdfs` is not None, then the visualization is saved into the specified pdf multipages object  
+        
+        Note - this method is categorically distinct from the rest of the class, yet is part of the class to make use of GHK-related methods. However, the same set of internal/external ion compositions is assumed.    
+        """
+        
+        # select current and voltage in desired window given by `w`
+        i_inst = df_i.iloc[:w*khz, :].mean(axis=0).values 
+        voltages = df_v.iloc[1, :].values
+        
+        # current density 
+        i_inst_cm = i_inst / Cm 
+        
+        # linear fits of i_inst and i_inst_cm against voltage using Chebyshev 
+        LinFit_i = np.polyfit(voltages, i_inst, deg=1)
+        LinFit_i_cm = np.polyfit(voltages, i_inst_cm, deg=1)
+                
+        if plot_results:
+            f, ax = plt.subplots(1, 2, figsize=(12, 5), constrained_layout=True)
+            f.suptitle("I-V")
+            
+            for i in range(2):
+                for spine in ['left', 'bottom']:
+                    # move left and bottom spines to the center
+                    ax[i].spines[spine].set_position('zero')
+                    # transparency 
+                    ax[i].spines[spine].set_alpha(0.5)
+                    
+                # turn off right and top spines 
+                ax[i].spines['top'].set_visible(False)
+                ax[i].spines['right'].set_visible(False)
+
+                # Show ticks in the left and lower axes only
+                ax[i].xaxis.set_ticks_position('bottom')
+                ax[i].yaxis.set_ticks_position('left')
+                
+                # align xlabel to the right edge of the axis 
+                ax[i].set_xlabel("Voltage (mV)", ha="right", x=0.98)
+                
+            # align ylabels to the top edge of the axis
+            ax[0].set_title("Current (pA)", fontweight='bold', pad=12)
+            ax[1].set_title("Current\nDensity (pA/pF)", fontweight='bold', pad=12)
+            
+            def plot_IV(A, I, L, V=voltages, return_params=False):
+                """
+                A = axes 
+                I = current 
+                L = linear fit parameters 
+                G = GHK current 
+                S = spline 
+                """
+                
+                # fit spline to current/voltage
+                V, I = multi_sort(zip(V, I))
+                spl = UnivariateSpline(V, I)
+                
+                try:
+                    Erev = [x for x in spl.roots() if -40 < x < 10][0]
+                except:
+                    # reversal potential from linear fits 
+                    print(" Failed to get Erev as root from polynomial spline.")
+                    Erev = -L[0]/L[1] 
+                
+                # fit Iinst-V with GHK current equation
+                self.E = math.exp(Erev/self.RT_F)
+                self.fit_ghk_leak(I, V)
+                # simulate GHK current 
+                G = self.get_leak_current(V, self.popt, mode='double')
+                        
+                # absolute and relative permeabilities
+                P_K = self.popt[0]
+                P_Na = self.ghk_get_permeability([self.popt])[0]
+                P_K_Na = P_K/P_Na
+                
+                # information to label in each plot
+                s = (r"$P_{K}/P_{Na}$ = %.2f" % P_K_Na) + "\n" + \
+                    (r"$P_{K}$ = %.1e" % P_K) + "\n" + (r"$P_{Na}$ = %.1e" % P_Na) + "\n" + \
+                    (r"$E_{rev}$ = %.1f mV" % Erev) + "\n" + (r"$C_m$ = %d pF" % Cm)     
+                
+                A.plot(V, I, marker='o', ls='none', markersize=6, c='k', label=None)
+                A.plot(V, np.polyval(L, V), lw=2, ls='--', c='blue', label="Linear")
+                A.plot(V, G, c='r', lw=2, label='GHK')
+                A.plot(V, spl(V), ls=':', c='g', lw=2.5, label="Spline")
+                
+                # expand xlimits if necessary 
+                xlims = list(A.get_xlim())
+                if xlims[1] > 0 or xlims[0] > -50:
+                    if 0 < xlims[1] < 50: 
+                        xlims[1] = 50
+                    elif xlims[0] > -50:
+                        xlims[0] = -50
+                    A.set_xlim(xlims[0], xlims[1])
+                elif xlims[1] < 0:
+                    xlims[1] = 0
+                    A.set_xlim(xlims[0], xlims[1])
+                
+                # nbins for yticks 
+                A.locator_params(axis='y', nbins=4)
+                
+                # add text box with the labels 
+                if xlims[0] < -120:
+                    A.text(0.65, 0.2, s, transform=A.transAxes, fontsize=11, va='top')
+                else:
+                    A.text(0.75, 0.2, s, transform=A.transAxes, fontsize=11, va='top')
+                
+                print("IV parameters:",
+                    "\n PK/PNa$ = ", P_K_Na, "\n PK = ", P_K, 
+                    "\n PNa = ", P_Na, "\n Erev = ", Erev, 
+                    "\n Cm = ", Cm)
+                
+                # legend 
+                A.legend(loc='upper left', fontsize=11, bbox_to_anchor=(0, 0.7, 0.5, 0.5))
+                
+                if return_params:
+                    return Erev, P_K, P_Na
+                
+            plot_IV(ax[0], i_inst, LinFit_i)
+            Erev, P_K, P_Na = plot_IV(ax[1], i_inst_cm, LinFit_i_cm, return_params=True)
+            
+            # plt.tight_layout(rect=[0, 0.03, 1, 0.95])
+            
+            if pdfs is not None:
+                pdfs.savefig(bbox_inches='tight')
+            
+            plt.show()
+            plt.close()
+        
+        else:
+            raise Exception("`plot_results` must be enabled for IV analysis, otherwise parameters won't be returned.")
+        
+        if output:
+            # create dataframe with columns for instantaneous current and current density 
+            Iinst_df = pd.DataFrame(data={"pA" : i_inst, "pA/pF" : i_inst_cm}, index=voltages)
+            IV_params = pd.DataFrame(data={
+                "Erev" : Erev, "P_K" : P_K, "P_Na" : P_Na, "C_m" : Cm
+            })
+            
+            return IV_params, Iinst_df
+        
+    def PseudoLeakSubtraction(self, original, epochs=None, 
+                    use_tails=True, tail_threshold=20, method='ohmic', plot_results=False):
+        """
+        Leak subtraction based on instantaneous current and holding current. Only applicable for activation protocols. 
+        `original` = original dataframe 
+        `epochs` = dictionary of epochs, {sweep # : [epoch1, epoch2, ...]} 
+        `use_tails` = whether to use tail currents (follow immediately after activation)
+        `method` = 'ohmic' or 'ghk' 
+        
+        Returns leak-subtracted dataframe 
+        """
+        if epochs is None:
+            epochs = self.epochs 
+        
+        if self.N is None:
+            self.N = int(original.shape[1]/2)
+        
+        khz = self.khz 
+        
+        # find index of first pulse with varying voltage 
+        u = None 
+        for k, v in epochs.items():
+            
+            if u is not None:
+                break 
+            
+            for i, t in enumerate(v):
+                
+                # skip if epoch is not in first sweep 
+                if t not in epochs[1]:
+                    break 
+                
+                # voltage at epoch `t` for all sweeps 
+                volts = original.iloc[(t + 10*khz):(t + 110*khz), self.N:].mean(axis=0)
+                
+                # check if difference between consecutive sweeps is at least 5 mV
+                if np.all(np.abs(volts.iloc[1:].values - volts.iloc[:-1].values) >= 5):
+                    u = i 
+                    break 
+        
+        # voltage and current at onset of first varying-voltage pulse (activation)
+        t0 = epochs[1][u] 
+        # select first 50ms, with 20ms offset 
+        i_vary = original.iloc[(t0 + 20*khz):(t0 + 70*khz), :]
+        v_vary = [int(x/5)*5 for x in i_vary.iloc[10, self.N:]]
+        i_vary = i_vary.iloc[:, :self.N].mean(axis=0)
+        
+        # voltage and current at holding potential
+        t0 = epochs[1][0]
+        # select last 50ms, with 100ms offset 
+        i_hold = original.iloc[(t0 - 150*khz):(t0 - 100*khz), :]
+        v_hold = i_hold.iloc[10, self.N:].values 
+        i_hold = i_hold.iloc[:,:self.N].mean(axis=0) 
+                
+        if use_tails:
+            # select epoch that acts as upper bound of tail 
+            t0 = epochs[1][u+2]
+            
+            # check change in current in last 250ms of tail, w/ 20ms offset and 5ms avg
+            # if change is > tail_threshold, skip tails 
+            dI_ss = original.iloc[(t0 - 270*khz):(t0 - 20*khz), :self.N].rolling(5*khz).mean().dropna()
+            dI_ss = (dI_ss.max(axis=0) - dI_ss.min(axis=0)).abs()
+            
+            if (dI_ss <= tail_threshold).all():
+                # select last 50ms, with 50ms offset 
+                i_tails = original.iloc[(t0 - 100*khz):(t0 - 50*khz), :]
+                v_tails = i_tails.iloc[10, self.N:].values 
+                i_tails = i_tails.iloc[:, :self.N].mean(axis=0)
+                
+                current = [i_hold, i_vary, i_tails]
+                volts = [v_hold, v_vary, v_tails]
+            else:
+                print("`use_tails=True`, but will not proceed, because change in current over last 500 (+20) ms is greater than 10pA")
+                print(dI_ss)
+                
+                current = [i_hold, i_vary]
+                volts = [v_hold, v_vary]
+        else:
+            current = [i_hold, i_vary]
+            volts = [v_hold, v_vary]
+        
+        df_sub = original.copy()
+        leak_params = [] 
+        for i in range(self.N):
+            
+            i_ = [x.iloc[i] for x in current]
+            v_ = [x[i] for x in volts]
+            
+            #fit with ohmic leak equation 
+            if method == 'ohmic':
+                self.fit_ohmic_leak(i_, v_)  
+                leak_i = self.get_leak_current(original.iloc[:,self.N+i], self.popt, mode="ohmic")
+            #fit with ghk equation 
+            elif method in ['double', 'triple']:
+                self.fit_ghk_leak(i_, v_, mode=method)
+                leak_i = self.get_leak_current(original.iloc[:,self.N+i], self.popt, mode=method)
+            
+            # subtract from the entire trace 
+            df_sub.iloc[:,i] -= leak_i 
+            
+            leak_params.append(self.popt) 
+            
+        self.leak_params = leak_params 
+        if plot_results:
+            
+            f = plt.figure(figsize=(10, 6), constrained_layout=True)
+            gs = f.add_gridspec(nrows=2, ncols=3)
+            ax1 = f.add_subplot(gs[0, :])
+            ax2 = f.add_subplot(gs[1, 0])
+            ax3 = f.add_subplot(gs[1, 1])
+            ax4 = f.add_subplot(gs[1, 2])
+            # axs = [ax1, ax2, ax3, ax4]
+            
+            # plot original and usbtracted current time courses 
+            ax1.set_ylabel("Current (pA)")
+            ax1.set_xlabel("Time (ms)")
+            ax1.plot(original.iloc[:, :self.N], alpha=0.5, c='gray', lw=1)
+            ax1.plot(df_sub.iloc[:, :self.N], c='r', lw=2)
+            
+            ax2.set_title(r"$\gamma$ (pS)")
+            ax3.set_title(r"$E_{\mathregular{leak}}$ (mV)")
+            for a in [ax2, ax3, ax4]:
+                a.set_xlabel("Sweep #")
+                        
+            # plot leak parameters 
+            for j, ax in enumerate([ax2, ax3]):
+                # extract jth parameter for each sweep
+                p_j = [x[j] for x in leak_params]
+                ax.plot(range(1, self.N + 1), p_j, marker='o', ls='none', c='lightblue')
+                
+            # plot current and voltage values used for fitting, along with fitted equations 
+            for i in range(self.N):
+                clr = cmap(i/(self.N - 1))
+                
+                i_ = [x.iloc[i] for x in current]
+                v_ = [x[i] for x in volts]
+                
+                ax4.plot(v_, i_, marker='o', ls='none', c=clr)
+                
+                # voltages for interpolation of fitted equations 
+                v_ = range(min((min(v_), -150)), 50) 
+                
+                # plot interpolated fits on ax4 
+                if method == 'ohmic':
+                    leak_i = self.get_leak_current(v_, leak_params[i], mode="ohmic")
+                elif method in ['double', 'triple']:
+                    leak_i = self.get_leak_current(v_, leak_params[i], mode=method)
+                    
+                ax4.plot(v_, leak_i, c=clr, lw=1, alpha=0.5, ls='--')
+                
+            plt.show()
+            plt.close()
+                            
+        return df_sub 
+    

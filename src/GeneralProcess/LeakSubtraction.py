@@ -1,29 +1,291 @@
-import glob
-import math
-import os
+# Copyright (c) 2022 Delbert Yip
+# 
+# This software is released under the MIT License.
+# https://opensource.org/licenses/MIT
 
-import matplotlib.patheffects as pe
-import matplotlib.pyplot as plt
+import glob, math, os 
+
+from abc import ABC, abstractmethod 
+from typing import Generator, List, Dict, NamedTuple, Union
+import logging 
+
 import numpy as np
 import pandas as pd
+
+import matplotlib.pyplot as plt
+import matplotlib.patheffects as pe
 from matplotlib import rcParams
 from matplotlib.backends.backend_pdf import PdfPages
 
-rcParams['font.size'] = 12 
-rcParams['font.family'] = 'sans-serif'
-rcParams['font.sans-serif'] = 'Verdana'
-rcParams['font.weight'] = 'normal'
-rcParams['axes.linewidth'] = 2
-rcParams['axes.labelweight'] = 'bold' 
-
-# cmap = plt.cm.get_cmap()
-cmap = plt.cm.get_cmap("gist_rainbow")
-
 from scipy.interpolate import UnivariateSpline
-from scipy.optimize import curve_fit, minimize, least_squares
 from scipy.stats import pearsonr, sem
+import lmfit 
 
 from GeneralProcess.ActivationCurves import multi_sort
+from GeneralProcess.Base import NDArrayFloat
+
+# --------------------------------- Constants -------------------------------- #
+
+RTF_CONSTANT = (8.31446261815324*298)/(96.485)
+
+# ---------------------------------------------------------------------------- #
+
+def getIonSets(
+    ion_set: Union[str, Dict[str, List[int]]], 
+    permeant=['Na', 'K', 'Cl']
+) -> Dict[str, List[int]]:
+    """
+    Get internal and external concentrations of ions 
+    """
+    # dictionary of ion concentrations, {ion : [internal, external]}
+    if ion_set is None:
+        return {"Na" : [10, 110], "K" : [130, 30], "Cl" : [141, 144.6]} 
+    
+    if ion_set == "HighK":
+        return {"Na" : [10, 135], "K" : [130, 5.4], "Cl" : [141, 144.6]} 
+    
+    if not isinstance(ion_set, dict):
+        raise ValueError(f"`ion_set` can only be None, 'HighK', or a Dictionary of ion concentrations, not\n{ion_set}")
+    
+    if not all(x in ion_set for x in permeant):
+        
+        logging.warning(f"The following ion set\n{ion_set}\n does not have one or more of permeant ions: {permeant}. Resorting to default: Na, K, Cl.")
+        
+        permeant = ['Na', 'K', 'Cl']
+    
+    for ion in permeant:
+        
+        if ion not in ion_set: 
+            raise KeyError(f"Ion set does not contain concentrations of {ion}")
+
+        if len(ion_set[ion]) != 2:
+            raise ValueError(f"Ion set does not contain two values (internal, external concentrations) for ion {ion}:\n{ion_set}")
+        
+    return ion_set 
+
+# ---------------------------------------------------------------------------- #
+#                            Models of leak current                            #
+# ---------------------------------------------------------------------------- #
+class AbstractCurrentModel(ABC):
+    """Abstract interface for models of leak current"""
+        
+    @abstractmethod 
+    def set_params(self) -> lmfit.Parameters: 
+        """Create lmfit Parameters"""
+        return 
+    
+    @abstractmethod
+    def simulate(
+        self, params: lmfit.Parameters, 
+        voltages: Union[float, NDArrayFloat]
+    ) -> Union[float, NDArrayFloat]:
+        """Simulate leak current for given voltages"""
+        return 
+    
+    def residual(
+        self, params: lmfit.Parameters, 
+        voltages: NDArrayFloat, current: NDArrayFloat
+    ) -> NDArrayFloat:
+        model = self.simulate(params, voltages)
+        return model - current  
+    
+    def fit(self, voltages: NDArrayFloat, current: NDArrayFloat, 
+            method='leastsq', **kwargs):
+        
+        params = self.set_params()
+        
+        if len(voltages.shape) > 1 or len(current.shape) > 1: 
+            raise ValueError(f"Voltages and current should be one-dimensional, but have shapes {voltages.shape} and {current.shape}, respectively.")
+        
+        res = lmfit.minimize(self.residual, params, 
+                            method=method, **kwargs)
+        self.res = res 
+        return res
+
+    def __repr__(self) -> str:
+        if self.res is None: return "" 
+        return lmfit.fit_report(self.res)
+
+# ---------------------------- GHK current models ---------------------------- #
+class AbstractGHKCurrent(AbstractCurrentModel):
+    """
+    Abstract model of GHK current 
+    
+    References for GHK equations:  
+    1. Johnston and Wu, p. 58  
+    2. Hille 2001, p. 473  
+    3. https://en.wikipedia.org/wiki/Goldman%E2%80%93Hodgkin%E2%80%93Katz_flux_equation  
+    """
+
+    def __init__(
+        self, ion_set: Dict[str, List[List[float]]], RMP: float
+    ) -> None:
+        
+        self.ion_set = ion_set 
+        self.ion_deltas()
+        self.E_RMP = math.exp(RMP / RTF_CONSTANT)
+        
+    def ion_deltas(self) -> None:
+        """Compute internal - external for each ion"""
+        self.ion_deltas = {
+            name : conc[0] - conc[1] for name, conc in self.ion_set.items()
+        }    
+    
+    @staticmethod 
+    def ghk(voltages: NDArrayFloat, d_ion: float) -> NDArrayFloat:
+        """GHK current equation"""
+        
+        E = voltages / RTF_CONSTANT
+        E2 = np.exp(-E)
+        
+        return 96.485 * E * (d_ion*E2) / (1 - E2)
+    
+    def ghk_zero(self, parvals: Dict[str, float]) -> float:
+        """GHK evaluated at 0 mV"""
+        current = 0.
+        
+        for ion, perm in parvals.items():
+            if ion not in self.ion_deltas: continue 
+            current += perm * self.ion_deltas[ion]
+        
+        return 96.485 * current 
+        
+    def ghk_nonzero(
+        self, voltages: Union[float, NDArrayFloat], parvals: Dict[str, float]
+    ) -> Union[float, NDArrayFloat]:
+        
+        return sum(
+            (perm * self.ghk(voltages, self.ion_deltas[ion]) for
+            ion, perm in parvals.items())
+        )
+    
+    @abstractmethod 
+    def get_all_permeabilities(
+        self, params: lmfit.Parameters
+    ) -> Dict[str, float]:
+        """Compute permeabilities for all ions"""
+        return
+    
+    def simulate(
+        self, params: lmfit.Parameters, voltages: Union[float, NDArrayFloat]
+    ) -> Union[float, NDArrayFloat]:
+        """
+        Compute GHK leak equation, assuming nothing about the number
+        or identity of permeant ions. 
+        """
+        # parvals = params.valuesdict()
+        parvals = self.get_all_permeabilities()
+        
+        # ghk current evaluated at zero mV
+        i_zero = self.ghk_zero(parvals)
+        
+        if hasattr(voltages, 'shape'):
+            
+            out = np.zeros_like(voltages)
+            nonzero = np.nonzero(voltages)
+            
+            out[~nonzero] = i_zero 
+            out[nonzero] = sum(self.ghk_nonzero(voltages[nonzero], parvals))
+            
+            return out 
+        
+        if voltages == 0:
+            return i_zero 
+        else:
+            return sum(self.ghk_nonzero(voltages, parvals))
+    
+    def residual(
+        self, params: lmfit.Parameters, voltages: NDArrayFloat,
+        current: NDArrayFloat
+    ) -> NDArrayFloat:
+        
+        model = self.simulate(params, voltages)
+        return model - current 
+    
+    def _create_repr_header(self) -> str:
+        header = f"GHK model\nIon set\n{'Ion':<8}{'Internal':^8}{'External':^8}\n"
+        for name, conc in self.ion_set.items():
+            header += f"{name:<8}{conc[0]:^8}{conc[1]:^8}"
+        return header 
+    
+    def __repr__(self) -> str:
+        
+        header = self._create_repr_header()
+        try:
+            return header + '\n' + self.res 
+        except KeyError:
+            logging.info("No fit results to show.")
+            return header 
+    
+class DoubleGHKCurrent(AbstractGHKCurrent):
+    
+    def set_params(self) -> lmfit.Parameters:
+        params = lmfit.Parameters()
+        params.add('K', value=1e-5, min=1e-8, max=1.)
+        return params 
+    
+    def _get_perm(
+        self, P_K: Union[float, NDArrayFloat]
+    ) -> Union[float, NDArrayFloat]:
+        """Infer absolute P_Na"""
+        K = self.ion_set['K']
+        Na = self.ion_set['Na']
+        E = self.E_RMP
+        return P_K*( (E*K[0] - K[1]) / (Na[1] - E*Na[0]) )
+    
+    def get_all_permeabilities(self, params: lmfit.Parameters) -> Dict[str, float]:
+        
+        K = self.ion_set['K']
+        Na = self.ion_set['Na']
+        E = self.E_RMP
+        
+        parvals = params.valuesdict()
+        parvals['Na'] =  parvals['K']*( (E*K[0] - K[1]) / (Na[1] - E*Na[0]) )
+        return parvals 
+        
+class TripleGHKCurrent(AbstractGHKCurrent):
+    
+    def set_params(self) -> lmfit.Parameters:
+        params = lmfit.Parameters()
+        params.add('K', value=1e-5, min=1e-8, max=1.)
+        params.add('Cl', value=0.1, min=1e-8, max=1.)
+        return params 
+            
+    def get_all_permeabilities(self, params: lmfit.Parameters) -> Dict[str, float]:
+        
+        K = self.ion_set["K"]
+        Na = self.ion_set["Na"]
+        Cl = self.ion_set["Cl"]
+        
+        parvals = params.valuesdict()
+        
+        parvals['Na'] = (
+            parvals['Cl']*(E*Cl[1] - Cl[0]) + (E*K[0] - K[1]) 
+        ) / (Na[1] - E*Na[0])
+        
+        return parvals 
+    
+# -------------------------------- Ohmic leak -------------------------------- #
+
+class OhmicCurrent(AbstractCurrentModel):
+    
+    def set_params(self) -> lmfit.Parameters:
+        params = lmfit.Parameters()
+        params.add('g_leak', value=-1., min=-15., max=15.)
+        params.add('E_leak', value=-10., min=-80., max=20.)
+
+    def simulate(self, params: lmfit.Parameters, voltages: Union[float, NDArrayFloat]) -> Union[float, NDArrayFloat]:
+        return params['g_leak'] * (voltages - params['E_leak'])
+    
+    def __repr__(self) -> str:
+        return "Ohmic model\n" + super().__repr__()
+
+
+# ---------------------------------------------------------------------------- #
+#                              Locate leak region                              #
+# ---------------------------------------------------------------------------- #
+
+
 
 class leak_subtract():
     def __init__(self, ramp_times, khz=2, epochs=None, residual=False, ion_set=None):
@@ -38,295 +300,24 @@ class leak_subtract():
         self.ramp_startend = ramp_times 
         self.khz = khz 
         self.epochs = epochs 
-        self.RT_F = (8.31446261815324*298)/(96.485)
+        
         self.transformed = False  
         
         # data 
         self.ramp_df = None 
+        
         # number of sweeps 
         self.N = None 
         
         # black border to plots of fitted leak current
         self.line_border = [pe.Stroke(linewidth=5, foreground='k'), pe.Normal()]
         
-        # dictionary of ion concentrations, {ion : [internal, external]}
-        if ion_set is None:
-            # self.ion_set = {"Na" : [14, 110], "K" : [135, 35], "Cl" : [141, 144.6]} 
-            self.ion_set = {"Na" : [10, 110], "K" : [130, 30], "Cl" : [141, 144.6]} 
-        elif ion_set == "HighK":
-            self.ion_set = {"Na" : [10, 135], "K" : [130, 5.4], "Cl" : [141, 144.6]} 
-        elif isinstance(ion_set, dict):
-            # assume only Na, K, and Cl permeate the membrane at rest 
-            ions = ["Na", "K", "Cl"]
-            
-            # test that Na, K, and Cl are provided 
-            if all(x in ion_set.keys() for x in ions):
-                if all(len(ion_set[x]) == 2 for x in ions):
-                    self.ion_set = ion_set
-                else:
-                    print("     Provided `ion_set` does not have 2 values (inside, outside concentrations) for each ion. Resorting to default. \n")
-                    print(ion_set)
-            else:
-                print("     Provided `ion_set` does not have one or more of Na, K, or Cl. Ensure the keys match exactly and that all are present. Resorting to default.")
-                print(ion_set)
-        else:
-            raise Exception("Type of `ion_set` must be Dict or accepted string, e.g. 'HighK.")
 
-    def ohmic_leak(self, V_cmd, g_leak, E_leak, 
-                g_res=None, Vhold=None):
-        """
-        Fit ohmic leak equation: I_leak = g_leak * (V_cmd - E_leak)
-            where, 
-                g_leak = conductance of leak current (pA/mV)
-                V_cmd = command voltage (mV)
-                E_leak = reversal potential of leak current (mV)
-        
-            If residual=True, return residual leak current, I_res:
-                I_res = I_leak + g_res*(V_cmd - Vhold)
-                I_leak_total = I_res + I_leak
-            Where, 
-                g_res = conductance of residual leak current 
-                V_cmd[0] = reversal potential of residual leak, set to holding potential, which is initial voltage of voltage ramp     
-        """
-        if self.res:
-            return g_res*(V_cmd-Vhold) + g_leak*(V_cmd-E_leak)
-        else:
-            return g_leak * (V_cmd - E_leak)
-        
-    def ghk(self, v, x):
-        """
-        GHK current equation  
-        voltage `v`   
-        list of ion concentrations `x` = [internal, external]  
-        """
-        e = v/self.RT_F 
-        return 96.485*e*(x[0] - x[1]*math.exp(-e))/(1 - math.exp(-e))
     
-    def ghk_leak(self, V, P_K):
-        """
-        Compute GHK leak equation.  
-        Besides P_K, free parameters are permeabilities for each ion w.r.t to that of K.  
-        
-        References for GHK equations:  
-        1. Johnston and Wu, p. 58  
-        2. Hille 2001, p. 473  
-        3. https://en.wikipedia.org/wiki/Goldman%E2%80%93Hodgkin%E2%80%93Katz_flux_equation  
-        """       
-        Na = self.ion_set["Na"]
-        K = self.ion_set["K"]
-        
-        # assume only K and Na permeate at rest and find P_Na / P_K 
-        # P_Na  
-        P_Na = P_K*(self.E*K[0] - K[1])/(Na[1] - self.E*Na[0])
-        
-        if isinstance(V, np.ndarray):
-            out = np.zeros(len(V))
-            
-            for i in range(len(V)):
-                if V[i] == 0:
-                    out[i] = 96.485* (P_K*(K[0] - K[1]) + P_Na*(Na[0] - Na[1]))
-                else:
-                    out[i] = P_K*self.ghk(V[i], K) + P_Na*self.ghk(V[i], Na)
-                    
-            return out 
-            
-        else:
-            if V == 0:
-                return 96.485*(P_K*(K[0] - K[1]) + P_Na*(Na[0] - Na[1]))
-            else:
-                return P_K*self.ghk(V, K) + P_Na*self.ghk(V, Na)
     
-    def ghk_leak_triple(self, V, P_K, P_Cl):
-        """
-        GHK equations for K+, Na+, and Cl-.  
-        P_K = absolute permeability for K+  
-        P_Cl = relative permeability p_Cl / P_K  
-        """
-        Na = self.ion_set["Na"]
-        K = self.ion_set["K"]
-        Cl = self.ion_set["Cl"]
-        
-        # relative permeability P_Na / P_K
-        P_Na = (1/(Na[1] - self.E*Na[0])) * ((self.E*K[0] - K[1]) + P_Cl*(self.E*Cl[1] - Cl[0]))
-        
-        if isinstance(V, np.ndarray):
-            out = np.zeros((len(V)))
-            for i in range(len(V)):
-                if V[i] == 0:
-                    out[i] = 96.485*(
-                        P_K*((K[0] - K[1]) + P_Na*(Na[0] - Na[1]) + P_Cl*(Cl[0] - Cl[1]))
-                    )
-                else:
-                    out[i] = 96.485*(
-                        P_K*(self.ghk(V[i], K) + P_Na*self.ghk(V[i], Na) + P_Cl*self.ghk(V[i], Cl))
-                    )
-            return out 
-        else:
-            if V == 0:
-                return 96.485*(
-                    P_K*((K[0] - K[1]) + P_Na*(Na[0] - Na[1]) + P_Cl*(Cl[0] - Cl[1]))
-                )                
-            else:
-                return 96.485*(
-                    P_K*(self.ghk(V, K) + P_Na*self.ghk(V, Na) + P_Cl*self.ghk(V, Cl))
-                )
     
-    def fit_ghk_leak(self, i, v, mode="double"):
-        """
-        Fit GHK leak equation.  
-        `i` = current values, target  
-        `v` = voltage, input  
-        """
-        if mode == "double":
-            self.popt, c = curve_fit(self.ghk_leak, v, i, 
-                    p0 = [1e-5],
-                    bounds=([1e-8], [10])
-            )
-        elif mode == "triple":
-            self.popt, c = curve_fit(self.ghk_leak_triple, v, i, 
-                                p0 = [1e-5, 0.1],
-                                bounds=([1e-8, 1e-5], [1, 1])
-            )
-        else:
-            raise Exception("   In call to `fit_ghk_leak`, `mode` argument was %s, which was not understood. Currently supported are `mode='double'` and `mode='triple'` for Na/K and Na/K/Cl being the only permeable ions at rest, respectively." % mode)
+            
     
-    def ghk_get_permeability(self, x):
-        """
-        Return implicit permeabilities from fitting GHK equations to leak ramps.  
-        `x` = fit parameter(s). List of fit parameters for each trace.  
-            * For `mode='double'`, only Na+ and K+ are permeable. P_K is the only fit parameter, so each x[i] is length 1.  
-            * For `mode='triple'`, Na+, K+, and Cl- are permeable. P_K and P_Cl/P_K are the fit parameters, so each x[i] is length 2. P_Na is inferred from GHK voltage equation, and P_Cl is converted to absolute permeability via P_K * P_Cl.  
-        `ions` = dictionary of {ion name : [internal, external] concentrations} for each ion. Number of keys must match length of x[i].  
-        self.E = RMP*96.485/8.3145/298, where RMP is the resting membrane potential.  
-        
-        Returns  
-            * `out` = list of relevant absolute permeabilities, either [P_Na] for `mode = double` or [P_Na, P_Cl], for each trace in `self.ramp_df`  
-        """
-        
-        E = self.E 
-        K = self.ion_set["K"]
-        Na = self.ion_set["Na"]
-        
-        if isinstance(x, float):
-            return x*((E*K[0] - K[1])/(Na[1] - E*Na[0]))
-        
-        out = [] 
-        
-        if len(self.ion_set.keys()) < len(x[0]):
-            raise Exception("   In call to `ghk_get_permeability`, dictionary `self.ion_set` does not have the same number of keys as the fit parameters for the first trace. \n e.g. if only Na+ and K+ are permeable (`mode = 'double'`), then there is only one fit parameter, and `ions` should at least have keys 'Na' and 'K'.")
-        
-        if len(x[0]) == 1:
-            for i, P_K in enumerate(x):
-                out.append(P_K*(E*K[0] - K[1])/(Na[1] - E*Na[0]))
-        else:
-            Cl = self.ion_set["Cl"]
-            for i in range(len(x)):
-                P_K, P_Cl = x[i] 
-                
-                P_Na = (P_K/(Na[1] - E*Na[0])) * ((E*K[0] - K[1]) + P_Cl*(E*Cl[1] - Cl[0]))
-                out.append([P_K*P_Cl, P_Na])
-        
-        return out 
-        
-    def fit_ohmic_leak(self, i, v):
-        """
-        Fit ohmic leak equation to current and voltage
-            i = ramp current
-            v = ramp voltage 
-        """
-        
-        if self.res:
-            self.popt, c = curve_fit(self.ohmic_leak,
-                            v, i,
-                            p0 = [-1, -10, -1, -1],
-                            bounds = ([-15, -20, -15, -20], 
-                                    [15, 20, 15, 20])
-            )
-        else:
-            self.popt, c = curve_fit(self.ohmic_leak,
-                            v, i,
-                            p0 = [-1, -10],
-                            bounds = ([-15, -80], [15, 20])
-            )
-    
-    def get_leak_current(self, traceV, params, mode="ohmic"):
-        """
-        Calculate leak current for a trace given its voltage protocol.
-        traceV = command voltage  
-        """
-        if mode == "ohmic":
-            return self.ohmic_leak(traceV, *params)
-        elif mode == "double":
-            return [self.ghk_leak(v, *params) for v in traceV]
-        elif mode == "triple":
-            return [self.ghk_leak_triple(v, *params) for v in traceV]
-        else:
-            raise Exception("   `mode` argument not understood in call to `get_leak_current`. \n    %s was provided, but only 'ohmic', 'double', and `triple` are currently supported." % mode)
-            
-    def find_ramp(self, df, return_ramp=False, show_ramp=False):
-        """
-        df = dataframe or array containing current in columns [0...N], and voltage in columns [N+1...2*N]
-        return_params: if True, will return 
-            [fit_parameters, leak-subtracted df]
-        """
-        #convert numpy array to pandas dataframe 
-        if isinstance(df, np.ndarray):
-            df = pd.DataFrame(df)
-        elif isinstance(df, pd.DataFrame):
-            pass 
-        else:
-            print("`df` must be pd.DataFrame or np.ndarray")
-            raise TypeError
-        
-        #number of traces 
-        N = int(df.shape[1]/2)
-        self.N = N 
-        
-        # get start and end times for both arms of the ramp 
-        if len(self.ramp_startend) > 2:
-            # whether the protocol was 'transformed' or not 
-            self.transformed = True 
-            
-            # file-specific transform for leak ramp epochs returns a list of start and end times
-            ramp_epochs = self.ramp_startend
-            
-            if len(ramp_epochs)/2 != N:
-                print("Number of leak ramp epochs != number of traces.")
-            
-            # find ramp for each trace 
-            ramp_df = [] 
-            ramp_pro_df = [] 
-            for i in range(0, len(ramp_epochs), 2):
-                t0, t1 = ramp_epochs[i:i+2]
-                # print(ramp_epochs, df.shape[0])
-                
-                j = int(i/2)
-                ramp_df.append(df.iloc[t0:t1+1, j])
-                ramp_pro_df.append(df.iloc[t0:t1+1, N+j])
-            
-            # concatenate 
-            ramp_df = pd.concat(ramp_df, axis=1).apply(lambda x: pd.Series(x.dropna().values))
-            ramp_pro_df = pd.concat(ramp_pro_df, axis=1).apply(lambda x: pd.Series(x.dropna().values))
-            ramp_df = pd.concat([ramp_df, ramp_pro_df], axis=1)
-        else:
-            self.transformed = False 
-            
-            t0, t1 = self.ramp_startend
-        
-            # get dataframe of just the voltage ramps
-            # ramp_df = df.iloc[self.ramp_startend[0]:self.ramp_startend[1]+1, :]
-            ramp_df = df.iloc[t0:t1+1, :]
-                
-        if show_ramp:
-            plt.plot(df.iloc[self.ramp_startend[0]-100:self.ramp_startend[1]+101, :])
-            plt.show()
-            plt.close()
-            # exit()
-        
-        if return_ramp:
-            return ramp_df 
-        else:
-            self.ramp_df = ramp_df 
 
     def apply_subtraction(self, leak_params):
         """

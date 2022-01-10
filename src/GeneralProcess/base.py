@@ -7,7 +7,7 @@ import matplotlib.pyplot as plt
 from matplotlib import rcParams
 from matplotlib.backends.backend_pdf import PdfPages
 
-import logging, glob 
+import logging, glob, os, inspect
 from datetime import datetime
 
 import numpy as np 
@@ -32,6 +32,11 @@ NDArrayFloat = npt.NDArray[np.float64]
 FloatOrArray = Union[float, NDArrayFloat]
 
 KwDict = Dict[str, Any]
+
+# https://stackoverflow.com/questions/533048/how-to-log-source-file-name-and-line-number-in-python
+LOG_FORMAT = logging.Formatter(
+    r"%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+)
 
 # ------------------------------- Base classes ------------------------------- #
 
@@ -73,9 +78,46 @@ class AbstractAnalyzer(ABC):
 
 # ---------------------------------- Logging --------------------------------- #
 
-def createLogger(log_path: str, overwrite: bool=False, **log_kw) -> logging.Logger:
-    
-    if log_path is None: 
+class CallStackFormatter(logging.Formatter):
+    """
+    https://stackoverflow.com/questions/54747730/adding-stack-info-to-logging-format-in-python
+    """
+    def formatStack(self, _ = None) -> str:
+        stack = inspect.stack()[::-1]
+        stack_names = (inspect.getmodulename(stack[0].filename),
+                       *(frame.function for frame in stack[1:-9]))
+        return '::'.join(stack_names)
+
+    def format(self, record: logging.LogRecord) -> str:
+        record.message = record.getMessage()
+        record.stack_info = self.formatStack()
+        if self.usesTime():
+            record.asctime = self.formatTime(record, self.datefmt)
+        
+        s = self.formatMessage(record)
+        if record.exc_info:
+            # Cache the traceback text to avoid converting it multiple times
+            # (it's constant anyway)
+            if not record.exc_text:
+                record.exc_text = self.formatException(record.exc_info)
+        if record.exc_text:
+            if s[-1:] != "\n":
+                s = s + "\n"
+            s = s + record.exc_text
+        return s
+
+def createLogger(
+    log_path: str, overwrite=False, 
+    formatter=CallStackFormatter(), log_level="DEBUG"
+) -> logging.Logger:
+        
+    if log_path is None or not os.path.isdir(log_path): 
+        logging.info(
+            f"{log_path} is an invalid directory. Logger instantiated without an output file."
+        )
+        logger = logging.basicConfig(
+            encoding='utf-8', level=log_level, format=formatter
+        )
         return None 
     
     if overwrite:
@@ -84,11 +126,16 @@ def createLogger(log_path: str, overwrite: bool=False, **log_kw) -> logging.Logg
         n = len(glob.glob(log_path + "processing*.log"))
         file = log_path + f"processing_{n}.log"
     
-    plog = logging.basicConfig(
-        filename=file, encoding='utf-8', level=logging.DEBUG, **log_kw
-    )
+    logging.basicConfig(format=formatter)
+    plog = logging.getLogger("Processing")
+    plog.setLevel(log_level)
     
-    logging.info(f"Log file created at time: {datetime.now()}")
+    hndl = logging.FileHandler(file, encoding='utf-8')
+    hndl.setLevel(log_level) 
+    hndl.setFormatter(formatter)
+    plog.addHandler(hndl)
+    
+    plog.info(f"Log file created at time: {datetime.now()}")
     
     return plog 
 
