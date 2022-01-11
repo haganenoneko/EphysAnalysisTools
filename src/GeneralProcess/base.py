@@ -38,7 +38,9 @@ LOG_FORMAT = logging.Formatter(
     r"%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 )
 
-# ------------------------------- Base classes ------------------------------- #
+# ---------------------------------------------------------------------------- #
+#                          Interfaces for data objects                         #
+# ---------------------------------------------------------------------------- #
 
 class Recording:
     """Base class to hold data for individual recordings"""
@@ -56,6 +58,8 @@ class RecordingWithMemTest(RecordingWithLeak):
     """Recordings that contain leak ramp and membrane test steps"""
     mt_startend: List[int]
 
+# ---------------------------------------------------------------------------- #
+#                        Interfaces for analysis classes                       #
 # ---------------------------------------------------------------------------- #
 
 class AbstractAnalyzer(ABC):
@@ -75,8 +79,59 @@ class AbstractAnalyzer(ABC):
     @abstractmethod
     def extract_data(self, key: str) -> None:
         pass         
+    
 
-# ---------------------------------- Logging --------------------------------- #
+# ---------------------------------------------------------------------------- #
+#                     Interfaces for visualization classes                     #
+# ---------------------------------------------------------------------------- #
+
+def save_pdf(data: Recording, fig: plt.Figure) -> None:
+
+    if not hasattr(data, 'pdf'): return 
+    
+    pdf = data.attrs['pdf']
+    pdf.savefig(fig, bbox_inches='tight')
+    
+
+class AbstractPlotter(ABC):
+    """Abstract interface for plotting leak subtraction results"""
+    
+    @abstractmethod 
+    def __init__(self, data: Recording, show=False) -> None:
+        pass 
+    
+    @abstractmethod 
+    def create_figure(self) -> None:
+        return 
+    
+    @abstractmethod 
+    def add_labels(self) -> None:
+        return 
+    
+    @abstractmethod 
+    def add_legend(self) -> None: 
+        return 
+    
+    @abstractmethod 
+    def format_axes(self) -> None: 
+        return 
+    
+    @abstractmethod 
+    def plot(self) -> None: 
+        return 
+    
+    def save(
+        self, show: bool, save_path: str, data: Recording
+    ) -> None: 
+        save_pdf(data, fig)
+        self.fig.savefig(save_path, dpi=300)
+        
+        if show: plt.show()
+        plt.close(self.fig)
+        
+# ---------------------------------------------------------------------------- #
+#                                Logging methods                               #
+# ---------------------------------------------------------------------------- #
 
 class CallStackFormatter(logging.Formatter):
     """
@@ -170,18 +225,11 @@ def get_valid_paths(
         
     return valid_paths 
 
-def save_pdf(data: Recording, fig: plt.Figure) -> None:
-
-    if 'pdf' not in data.__dict__:
-        return 
-    
-    pdf = data.attrs['pdf']
-    pdf.savefig(fig, bbox_inches='tight')
-    plt.close(fig=fig)
-    
-    return 
 
 # ----------------------------- Simple functions ----------------------------- #
+
+def CleanlyDropNaNs(df: pd.DataFrame) -> pd.DataFrame:
+    return df.apply(lambda x: pd.Series(x.dropna().values))
 
 def pprint_dict(
     d: Dict[str, Any], delim: str="\n", func: Callable[[Any], Any]=None
