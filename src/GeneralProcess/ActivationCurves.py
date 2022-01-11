@@ -215,14 +215,6 @@ def get_gv_leg_lab(vh, s, c=1, d=0):
         return "Fit \n $V_{1/2}$ = %.1f mV \n $s$=%.1f mV" % (Vhalf, s)
 
 
-def multi_sort(zipped):
-    """
-    Sort multiple lists in `zipped` according to first element 
-    Returns sorted lists 
-    """
-    return map(list, zip(*sorted(zipped)))
-
-
 class NoisyGV():
     def __init__(self, df, khz):
         self.df = df

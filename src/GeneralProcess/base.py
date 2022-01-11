@@ -1,5 +1,5 @@
 # Copyright (c) 2021 Delbert Yip
-# 
+#
 # This software is released under the MIT License.
 # https://opensource.org/licenses/MIT
 
@@ -7,11 +7,14 @@ import matplotlib.pyplot as plt
 from matplotlib import rcParams
 from matplotlib.backends.backend_pdf import PdfPages
 
-import logging, glob, os, inspect
+import logging
+import glob
+import os
+import inspect
 from datetime import datetime
 
-import numpy as np 
-import pandas as pd 
+import numpy as np
+import pandas as pd
 from pathlib import Path
 
 from abc import ABC, abstractmethod
@@ -19,7 +22,7 @@ from abc import ABC, abstractmethod
 from typing import Dict, Any, List, Union, Tuple
 from typing import Callable, TypeVar
 
-import numpy.typing as npt 
+import numpy.typing as npt
 
 # ------------------------------- Custom types ------------------------------- #
 
@@ -42,18 +45,21 @@ LOG_FORMAT = logging.Formatter(
 #                          Interfaces for data objects                         #
 # ---------------------------------------------------------------------------- #
 
+
 class Recording:
     """Base class to hold data for individual recordings"""
     raw_data: pd.DataFrame
-    name: str 
+    name: str
     params: pd.Series
     epoch_intervals: Dict[int, List[int]]
     attrs: Dict[str, Any]
 
+
 class RecordingWithLeak(Recording):
     """Recordings that contain leak ramp steps"""
     ramp_startend: List[int]
-    
+
+
 class RecordingWithMemTest(RecordingWithLeak):
     """Recordings that contain leak ramp and membrane test steps"""
     mt_startend: List[int]
@@ -62,24 +68,24 @@ class RecordingWithMemTest(RecordingWithLeak):
 #                        Interfaces for analysis classes                       #
 # ---------------------------------------------------------------------------- #
 
+
 class AbstractAnalyzer(ABC):
     @abstractmethod
-    def __init__(self, data: Recording, show: bool
-    ) -> None:
-        pass 
-    
-    @abstractmethod 
+    def __init__(self, data: Recording) -> None:
+        pass
+
+    @abstractmethod
     def run(self):
-        pass 
-    
+        pass
+
     @abstractmethod
     def plot_results(self) -> None:
-        pass 
-    
+        pass
+
     @abstractmethod
     def extract_data(self, key: str) -> None:
-        pass         
-    
+        pass
+
 
 # ---------------------------------------------------------------------------- #
 #                     Interfaces for visualization classes                     #
@@ -87,57 +93,61 @@ class AbstractAnalyzer(ABC):
 
 def save_pdf(data: Recording, fig: plt.Figure) -> None:
 
-    if not hasattr(data, 'pdf'): return 
-    
+    if not hasattr(data, 'pdf'):
+        return
+
     pdf = data.attrs['pdf']
     pdf.savefig(fig, bbox_inches='tight')
-    
+
 
 class AbstractPlotter(ABC):
     """Abstract interface for plotting leak subtraction results"""
-    
-    @abstractmethod 
+
+    @abstractmethod
     def __init__(self, data: Recording, show=False) -> None:
-        pass 
-    
-    @abstractmethod 
+        pass
+
+    @abstractmethod
     def create_figure(self) -> None:
-        return 
-    
-    @abstractmethod 
+        return
+
+    @abstractmethod
     def add_labels(self) -> None:
-        return 
-    
-    @abstractmethod 
-    def add_legend(self) -> None: 
-        return 
-    
-    @abstractmethod 
-    def format_axes(self) -> None: 
-        return 
-    
-    @abstractmethod 
-    def plot(self) -> None: 
-        return 
-    
+        return
+
+    @abstractmethod
+    def add_legend(self) -> None:
+        return
+
+    @abstractmethod
+    def format_axes(self) -> None:
+        return
+
+    @abstractmethod
+    def plot(self) -> None:
+        return
+
     def save(
         self, show: bool, save_path: str, data: Recording
-    ) -> None: 
+    ) -> None:
         save_pdf(data, fig)
         self.fig.savefig(save_path, dpi=300)
-        
-        if show: plt.show()
+
+        if show:
+            plt.show()
         plt.close(self.fig)
-        
+
 # ---------------------------------------------------------------------------- #
 #                                Logging methods                               #
 # ---------------------------------------------------------------------------- #
+
 
 class CallStackFormatter(logging.Formatter):
     """
     https://stackoverflow.com/questions/54747730/adding-stack-info-to-logging-format-in-python
     """
-    def formatStack(self, _ = None) -> str:
+
+    def formatStack(self, _=None) -> str:
         stack = inspect.stack()[::-1]
         stack_names = (inspect.getmodulename(stack[0].filename),
                        *(frame.function for frame in stack[1:-9]))
@@ -148,7 +158,7 @@ class CallStackFormatter(logging.Formatter):
         record.stack_info = self.formatStack()
         if self.usesTime():
             record.asctime = self.formatTime(record, self.datefmt)
-        
+
         s = self.formatMessage(record)
         if record.exc_info:
             # Cache the traceback text to avoid converting it multiple times
@@ -161,111 +171,138 @@ class CallStackFormatter(logging.Formatter):
             s = s + record.exc_text
         return s
 
+
 def createLogger(
-    log_path: str, overwrite=False, 
+    log_path: str, overwrite=False,
     formatter=CallStackFormatter(), log_level="DEBUG"
 ) -> logging.Logger:
-        
-    if log_path is None or not os.path.isdir(log_path): 
+
+    if log_path is None or not os.path.isdir(log_path):
         logging.info(
             f"{log_path} is an invalid directory. Logger instantiated without an output file."
         )
         logger = logging.basicConfig(
             encoding='utf-8', level=log_level, format=formatter
         )
-        return None 
-    
+        return None
+
     if overwrite:
         file = log_path + "processing.log"
     else:
         n = len(glob.glob(log_path + "processing*.log"))
         file = log_path + f"processing_{n}.log"
-    
+
     logging.basicConfig(format=formatter)
     plog = logging.getLogger("Processing")
     plog.setLevel(log_level)
-    
+
     hndl = logging.FileHandler(file, encoding='utf-8')
-    hndl.setLevel(log_level) 
+    hndl.setLevel(log_level)
     hndl.setFormatter(formatter)
     plog.addHandler(hndl)
-    
+
     plog.info(f"Log file created at time: {datetime.now()}")
-    
-    return plog 
+
+    return plog
 
 # -------------------------------- I/O helpers ------------------------------- #
 
+
 def get_valid_paths(
-    paths: Union[List[str], List[Path]], 
-    relative_dir: Union[str, Path]=None
+    paths: Union[List[str], List[Path]],
+    relative_dir: Union[str, Path] = None
 ) -> List[Path]:
-    
+
     invalid_msg = f"{0} is an invalid directory or file."
-    valid_paths = [] 
-    
-    # set relative directory to cwd if not given 
+    valid_paths = []
+
+    # set relative directory to cwd if not given
     if relative_dir is None:
         relative_dir = Path.cwd()
-    
+
     for p in paths:
-        
+
         if isinstance(p, str):
             p = Path(p)
 
         if p.is_dir() or p.is_file():
             valid_paths.append(p)
-            continue 
-        
+            continue
+
         p = relative_dir.joinpath(p)
-        if p.is_dir() or p.is_file(): 
+        if p.is_dir() or p.is_file():
             valid_paths.append(p)
         else:
             logging.info(invalid_msg.format(p))
-        
-    return valid_paths 
+
+    return valid_paths
 
 
 # ----------------------------- Simple functions ----------------------------- #
 
+def FallbackDecorator(
+    self, func, fallback
+):
+    def wrapped(*args, **kwargs):
+        try:
+            func(*args, **kwargs)
+        except (RuntimeError, NotImplementedError):
+            fallback(*args, **kwargs)
+    return wrapped
+
+
+def multi_sort(zipped):
+    """
+    Sort multiple lists in `zipped` according to first element 
+    Returns sorted lists 
+    """
+    return map(list, zip(*sorted(zipped)))
+
+
 def CleanlyDropNaNs(df: pd.DataFrame) -> pd.DataFrame:
     return df.apply(lambda x: pd.Series(x.dropna().values))
 
+
 def pprint_dict(
-    d: Dict[str, Any], delim: str="\n", func: Callable[[Any], Any]=None
+    d: Dict[str, Any], delim: str = "\n", func: Callable[[Any], Any] = None
 ) -> str:
     """Pretty printing for dictionaries"""
     if func is None:
         lst = [f"{k} = < {v} >" for k, v in d.items()]
     else:
         lst = [f"{k} = < {func(v)} >" for k, v in d.items()]
-    
+
     return delim.join(lst)
 
+
 def _get_df_shape(df: pd.DataFrame) -> Tuple[int, int]:
-    return df.shape 
+    return df.shape
+
 
 def scalarTimesList(scalar: TNumber, lst: List[TNumber]) -> List[TNumber]:
     return [scalar*x for x in lst]
 
+
 def extendListAsArray(lst: List[TNumber], dims: Tuple[int, ...]) -> Union[NDArrayFloat, NDArrayInt]:
-    
+
     elemType = type(lst[0])
     ext = np.full((dims[0], len(lst)), lst, dtype=elemType)
-    
-    if ext.shape == dims: 
-        return ext 
-    
+
+    if ext.shape == dims:
+        return ext
+
     extension = (0, dims[1] - ext.shape[1])
-    ext = np.pad(ext, ((0, 0), extension), 
-                    mode='constant', constant_values=ext[-1])
-    
-    return ext     
+    ext = np.pad(ext, ((0, 0), extension),
+                 mode='constant', constant_values=ext[-1])
+
+    return ext
 
 # define a single exponential
+
+
 def exp1(
     t: FloatOrArray, dI: FloatOrArray, tau: FloatOrArray, I_ss: FloatOrArray
-): 
+):
     """Single-exponential function
 
     :param t: time
