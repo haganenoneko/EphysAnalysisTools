@@ -950,7 +950,11 @@ class PlotGHK(AbstractPlotter):
 #                     Current-Voltage Analysis and Plotting                    #
 # ---------------------------------------------------------------------------- #
 
-
+@dataclass 
+class IVResults:
+    i_inst: pd.DataFrame 
+    params: pd.DataFrame
+    params_cm: pd.DataFrame
 class AnalyzeIV(AbstractAnalyzer):
     """
     Find reversal potential, ion permeabilities, and linear fit from instantaneous current.  
@@ -965,33 +969,97 @@ class AnalyzeIV(AbstractAnalyzer):
     def __init__(self, data: Recording) -> None:
         self.data = data
 
-    def get_Iinst(self, df_i, df_v, Cm, w: int =5):
+    def get_Iinst(
+        self, current: pd.DataFrame, voltages: pd.DataFrame, w: int =5
+    ):
         khz = self.data.attrs['khz']
 
         # select current and voltage in desired window given by `w`
-        i_inst = df_i.iloc[:w*khz, :].mean(axis=0).values
-        voltages = df_v.iloc[1, :].values
+        i_inst = current.iloc[:w*khz, :].mean(axis=0).values
+        voltages = voltages.iloc[1, :].values
 
         # current density
-        i_inst_cm = i_inst / Cm
+        # i_inst_cm = i_inst / self.data.attrs['Cm']
 
-        # linear fits of i_inst and i_inst_cm against voltage using Chebyshev
-        LinFit_i = np.polyfit(voltages, i_inst, deg=1)
-        LinFit_i_cm = np.polyfit(voltages, i_inst_cm, deg=1)
+        return voltages, i_inst 
+    
+        @staticmethod
+    
+    @staticmethod
+    def find_Erev(
+        params: NDArrayFloat, spl: UnivariateSpline, v_min=-40, v_max=10
+    ) -> float: 
+        
+        try:
+            Erev = [x for x in spl.roots() if v_min < x < v_max][0]
+        except (ValueError, RuntimeError):
+            # reversal potential from linear fits
+            logging.error("Failed to estimate x-intercept of I-V from the root of polynomial splines. Defaulting to inference from parameters of linear Ohmic fit to leak current.")
+            
+            Erev = -params[0] / params[1]
+        
+        return Erev
+    
+    def fit_ghk(
+        self, voltages: NDArrayFloat, current: NDArrayFloat,
+        linear_fit: NDArrayFloat,
+    ):
+        i_ohmic = np.polyval(linear_fit, voltages)
+        
+        # fit spline to current/voltage
+        voltages, current = multi_sort(zip(voltages, current))
+        spl = UnivariateSpline(voltages, current)
+        i_spl = spl(voltages)
 
+        Erev = self.find_Erev(linear_fit, spl)
+                
+        # fit Iinst-V with GHK current equation
+        E = math.exp(Erev/RTF_CONSTANT)
+        ghk_params = self.GHK_model.fit(voltages, current)
+        i_ghk = self.GHK_model.simulate(ghk_params, voltages)
+        
+    def get_ghk_perms(self, params: lmfit.Parameters):
+        # absolute permeabilities 
+        perms = self.GHK_model.get_all_permeabilities(params)
+        P_K, P_Na = perms['K'], perms['Na']
+        P_K_Na = P_K / P_Na 
+        return P_K, P_Na, P_K_Na 
+    
     def run(self):
-        return super().run()
+        
+        voltages, i_inst = self.get_Iinst()
+        i_inst_cm = i_inst / self.data.params.loc['Cm']
+        
+        # linear fits of i_inst and i_inst_cm against voltage using Chebyshev
+        linfit = np.polyfit(voltages, i_inst, deg=1)
+        linfit_cm = np.polyfit(voltages, i_inst_cm, deg=1)
+                        
+        self.Iinst_df = pd.DataFrame(
+            data={"pA" : i_inst, "pA/pF" : i_inst_cm}, index=voltages
+        )
 
-    def plot_results(self) -> None:
-        return super().plot_results()
+
+    def plot_results(
+        self, voltages: NDArrayFloat, current: NDArrayFloat,
+        linfit: NDArrayFloat, 
+    ) -> None:
+        
+        
+        
+        spl = UnivariateSpline(voltages, current)
+        i_spl = spl(voltages)
+        
+        
 
     def extract_data(self, key: str) -> None:
         return super().extract_data(key)
 
 
 class PlotIV(AbstractPlotter):
-    def __init__(self, data: Recording, show=False) -> None:
-        super().__init__(data, show=show)
+    def __init__(self, data: Recording, GHK_model: AbstractGHKCurrent) -> None:
+        
+        self.Cm = data.params['C_m']
+        self.GHK_model = GHK_model
 
     def create_figure(self) -> None:
         fig, axs = plt.subplots(1, 2, figsize=(12, 5),
@@ -1002,7 +1070,6 @@ class PlotIV(AbstractPlotter):
         self.axs = axs
 
     def add_labels(self) -> None:
-
         # align ylabels to the top edge of the axis
         self.axs[0].set_title("Current (pA)", fontweight='bold', pad=12)
         self.axs[1].set_title("Current\nDensity (pA/pF)",
@@ -1027,58 +1094,55 @@ class PlotIV(AbstractPlotter):
             ax.xaxis.set_ticks_position('bottom')
             ax.yaxis.set_ticks_position('left')
 
-    @staticmethod
-    def find_Erev(
-        params: Dict[str, float], spl: UnivariateSpline,
-        v_min=-40, v_max=10
-    ) -> float: 
+    def add_legend(self) -> None:
+        raise NotImplementedError()
+    
+    def add_IV_legend(
+        self, ax: plt.Axes, perms: Dict[str, float], Erev: float
+    ):
         
-        try:
-            Erev = [x for x in spl.roots() if v_min < x < v_max][0]
-        except (ValueError, RuntimeError):
-            # reversal potential from linear fits
-            logging.error("Failed to estimate x-intercept of I-V from the root of polynomial splines. Defaulting to inference from parameters of linear Ohmic fit to leak current.")
-            
-            if 'E_leak' in params and 'g_leak' in params:
-                I_zero = -linear_fit['E_leak'] / linear_fit['g_leak']
-            else:
-                raise KeyError(f"'E_leak' and 'g_leak' were not found in parameters:\n{params}")
-        
-        return Erev
-                
-    def add_IV(
-        self, ax: plt.Axes, linear_fit: lmfit.Parameters,
-        voltages: NDArrayFloat, current: NDArrayFloat,
-        Cm: float, GHK_model: AbstractGHKCurrent
-    ) -> lmfit.Parameters:
-        # unpack linear fit parameters 
-        params = linear_fit.valuesdict()
-        
-        # fit spline to current/voltage
-        voltages, current = multi_sort(zip(voltages, current))
-        spl = UnivariateSpline(voltages, current)
-
-        Erev = self.find_Erev(linear_fit, spl)
-                
-        # fit Iinst-V with GHK current equation
-        self.E = math.exp(Erev/RTF_CONSTANT)
-        ghk_params = GHK_model.fit(voltages, current)
-        i_ghk = GHK_model.simulate(ghk_params, voltages)
-        
-        # absolute permeabilities 
-        perms = GHK_model.get_all_permeabilities(ghk_params)
         P_K, P_Na = perms['K'], perms['Na']
         P_K_Na = P_K / P_Na 
+        
+        # information to label in each plot
+        s = "\n".join([
+            f"$P_{{K}}/P_{{Na}}$ = {P_K_Na:.2f}",
+            f"$P_{{K}}$ = {P_K:.1e}",
+            f"$P_{{Na}}$ = {P_Na:.1e}",
+            f"$E_{{rev}}$ = {Erev:.1f} mV",
+            f"$C_m$ = {self.data.params['C_m']:d} pF"
+        ])
+        
+        # add text box with the labels
+        if ax.get_xlim()[0] < -120:
+            ax.text(0.65, 0.2, s, transform=ax.transAxes, fontsize=11, va='top')
+        else:
+            ax.text(0.75, 0.2, s, transform=ax.transAxes, fontsize=11, va='top')
+
+        logging.info(f"""IV Parameters
+            P_K/P_Na = {P_K_Na},
+            P_K = {P_K}, P_Na = {P_Na},
+            Erev = {Erev}, Cm = {self.Cm}
+            """)
+            
+        # legend
+        ax.legend(loc='upper left', fontsize=11, 
+                  bbox_to_anchor=(0, 0.7, 0.5, 0.5))
+
+        return dict(Erev=Erev, P_K=P_K, P_Na=P_Na)
+    
+    def add_IV(
+        self, ax: plt.Axes, voltages: NDArrayFloat, 
+        current: NDArrayFloat, i_ghk: NDArrayFloat,
+        i_ohmic: NDArrayFloat, i_spl: NDArrayFloat
+    ) -> Dict[str, float]:        
 
         ax.plot(voltages, current, marker='o', ls='none', 
                 markersize=6, c='k', label=None)
-        ax.plot(voltages, np.polyval(L, V), lw=2, ls='--', 
-                c='blue', label="Linear")
-        ax.plot(voltages, np.polyval(list(params.values()), voltages), 
-               lw=2, ls='--', c='blue', label="Linear")
+        
         ax.plot(voltages, i_ghk, c='r', lw=2, label='GHK')
-        ax.plot(voltages, spl(voltages), ls=':', c='g',
-                lw=2.5, label="Spline")
+        ax.plot(voltages, i_spl, ls=':', c='g', lw=2.5, label="Spline")
+        ax.plot(voltages, i_ohmic, lw=2, ls='--', c='blue', label="Linear")
 
         # expand xlimits if necessary
         xlims = list(ax.get_xlim())
@@ -1092,75 +1156,18 @@ class PlotIV(AbstractPlotter):
 
         # nbins for yticks
         ax.locator_params(axis='y', nbins=4)
-
-        # information to label in each plot
-        s = "\n".join([
-            f"$P_{{K}}/P_{{Na}}$ = {P_K_Na:.2f}",
-            f"$P_{{K}}$ = {P_K:.1e}",
-            f"$P_{{Na}}$ = {P_Na:.1e}",
-            f"$E_{{rev}}$ = {Erev:.1f} mV",
-            f"$C_m$ = {Cm:d} pF"
-        ])
         
-        # add text box with the labels
-        if xlims[0] < -120:
-            ax.text(0.65, 0.2, s, transform=ax.transAxes, fontsize=11, va='top')
-        else:
-            ax.text(0.75, 0.2, s, transform=ax.transAxes, fontsize=11, va='top')
 
-        logging.info(f"""IV Parameters
-            P_K/P_Na = {P_K_Na},
-            P_K = {P_K}, P_Na = {P_Na},
-            Erev = {Erev}, Cm = {Cm}
-            """)
-            
-        # legend
-        ax.legend(loc='upper left', fontsize=11, 
-                  bbox_to_anchor=(0, 0.7, 0.5, 0.5))
+    def plot(self, voltages: NDArrayFloat, i_inst: NDArrayFloat, 
+            linfit: lmfit.Parameters, linfit_cm: lmfit.Parameters
+        ) -> Tuple[pd.DataFrame]:
+        
+        res = self.add_IV(self.axs[0], linfit, voltages, i_inst)
+        res_cm = self.add_IV(self.axs[1], linfit_cm, voltages, i_inst)
 
-        return Erev, P_K, P_Na
-
-
-def IV_analysis(self, , plot_results=False, output=False, pdfs=None):
-    """
-
-
-    ## Output  
-    `plot_results` = if True, visualizes I-V and (I/Cm)-V with linear fits, labelled with Cm and permeability values.  
-    `output` = if True, returns array of computed values - (reversal, P_K, P_Na, P_Na/P_K, Iinst, Iinst/Cm)  
-    `pdfs` = if `plot_results = True` and `pdfs` is not None, then the visualization is saved into the specified pdf multipages object  
-
-    Note - this method is categorically distinct from the rest of the class, yet is part of the class to make use of GHK-related methods. However, the same set of internal/external ion compositions is assumed.    
-    """
-
-
-    if plot_results:
-
-        for i in range(2):
-
-
-        plot_IV(ax[0], i_inst, LinFit_i)
-        Erev, P_K, P_Na = plot_IV(ax[1], i_inst_cm, LinFit_i_cm, return_params=True)
-
-        # plt.tight_layout(rect=[0, 0.03, 1, 0.95])
-
-        if pdfs is not None:
-            pdfs.savefig(bbox_inches='tight')
-
-        plt.show()
-        plt.close()
-
-    else:
-        raise Exception("`plot_results` must be enabled for IV analysis, otherwise parameters won't be returned.")
-
-    if output:
-        # create dataframe with columns for instantaneous current and current density
-        Iinst_df = pd.DataFrame(data={"pA": i_inst, "pA/pF" : i_inst_cm}, index=voltages)
-        IV_params = pd.DataFrame(data={
-            "Erev": Erev, "P_K" : P_K, "P_Na" : P_Na, "C_m" : Cm
-        })
-
-        return IV_params, Iinst_df
+        res = pd.DataFrame.from_dict(res)
+        res_cm = pd.DataFrame.from_dict(res_cm)
+        return res, res_cm 
 
 # ---------------------------------------------------------------------------- #
 #                            Pseudo-leak subtraction                           #
