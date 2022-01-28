@@ -251,7 +251,7 @@ def FallbackDecorator(
     return wrapped
 
 
-def multi_sort(zipped):
+def multi_sort(zipped: List[list]):
     """
     Sort multiple lists in `zipped` according to first element 
     Returns sorted lists 

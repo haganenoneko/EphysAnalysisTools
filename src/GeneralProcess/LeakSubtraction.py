@@ -133,15 +133,31 @@ class AbstractGHKCurrent(AbstractCurrentModel):
     """
 
     def __init__(
-        self, ion_set: Dict[str, List[List[float]]], RMP: float
+        self, ion_set: Dict[str, List[List[float]]], RMP: float=0.
     ) -> None:
 
         self.ion_set = ion_set
         self.ion_deltas()
-        self.E_RMP = math.exp(RMP / RTF_CONSTANT)
+        
+        self._RMP = RMP 
+        self._eRMP = math.exp(RMP / RTF_CONSTANT)
 
+    # --------------- Reversal potential and thermodynamic exponent -------------- #
+    @property
+    def rmp(self):
+        return self._RMP
+    @rmp.setter 
+    def rmp(self, new_rmp: float):
+        self._RMP = new_rmp 
+        try:
+            self._eRMP = math.exp(new_rmp / RTF_CONSTANT)
+        except ValueError:
+            raise ValueError(f"Failed to compute thermodynamic exponent with given value of resting membrane potential: < {new_rmp} >")            
+    @rmp.getter
+    def rmp(self) -> float: return self._RMP
+    
     def ion_deltas(self) -> None:
-        """Compute internal - external for each ion"""
+        """Compute difference (internal - external) concentrations for each ion"""
         self.ion_deltas = {
             name: conc[0] - conc[1] for name, conc in self.ion_set.items()
         }
@@ -189,7 +205,7 @@ class AbstractGHKCurrent(AbstractCurrentModel):
         Compute GHK leak equation, assuming nothing about the number
         or identity of permeant ions.
         """
-        # parvals = params.valuesdict()
+        parvals = params.valuesdict()
         parvals = self.get_all_permeabilities()
 
         # ghk current evaluated at zero mV
@@ -247,14 +263,14 @@ class BionicGHKCurrent(AbstractGHKCurrent):
         """Infer absolute P_Na"""
         K = self.ion_set['K']
         Na = self.ion_set['Na']
-        E = self.E_RMP
+        E = self._eRMP
         return P_K*((E*K[0] - K[1]) / (Na[1] - E*Na[0]))
 
     def get_all_permeabilities(self, params: lmfit.Parameters) -> Dict[str, float]:
 
         K = self.ion_set['K']
         Na = self.ion_set['Na']
-        E = self.E_RMP
+        E = self._eRMP
 
         parvals = params.valuesdict()
         parvals['Na'] = parvals['K']*((E*K[0] - K[1]) / (Na[1] - E*Na[0]))
@@ -274,6 +290,7 @@ class TrionicGHKCurrent(AbstractGHKCurrent):
         K = self.ion_set["K"]
         Na = self.ion_set["Na"]
         Cl = self.ion_set["Cl"]
+        E = self._eRMP
 
         parvals = params.valuesdict()
 
@@ -966,12 +983,14 @@ class AnalyzeIV(AbstractAnalyzer):
     `Cm` = membrane capacitance; if given a plot of current density will also be produced  
     """
 
-    def __init__(self, data: Recording) -> None:
+    def __init__(self, data: Recording, ghk_model: AbstractGHKCurrent) -> None:
         self.data = data
+        self.GHK_model = ghk_model
 
     def get_Iinst(
         self, current: pd.DataFrame, voltages: pd.DataFrame, w: int =5
     ):
+        """Extract instantaneous current amplitude"""
         khz = self.data.attrs['khz']
 
         # select current and voltage in desired window given by `w`
@@ -982,16 +1001,16 @@ class AnalyzeIV(AbstractAnalyzer):
         # i_inst_cm = i_inst / self.data.attrs['Cm']
 
         return voltages, i_inst 
-    
-        @staticmethod
-    
+        
     @staticmethod
     def find_Erev(
         params: NDArrayFloat, spl: UnivariateSpline, v_min=-40, v_max=10
     ) -> float: 
-        
+        """
+        Find reversal potential as the root of polynomial spline or parameters of linear fit
+        """
         try:
-            Erev = [x for x in spl.roots() if v_min < x < v_max][0]
+            Erev = [x for x in spl.roots() if v_min < x < v_max][0]            
         except (ValueError, RuntimeError):
             # reversal potential from linear fits
             logging.error("Failed to estimate x-intercept of I-V from the root of polynomial splines. Defaulting to inference from parameters of linear Ohmic fit to leak current.")
@@ -1000,56 +1019,91 @@ class AnalyzeIV(AbstractAnalyzer):
         
         return Erev
     
-    def fit_ghk(
-        self, voltages: NDArrayFloat, current: NDArrayFloat,
-        linear_fit: NDArrayFloat,
-    ):
-        i_ohmic = np.polyval(linear_fit, voltages)
-        
-        # fit spline to current/voltage
-        voltages, current = multi_sort(zip(voltages, current))
+    @staticmethod 
+    def fit_spl(
+        voltages: NDArrayFloat, current: NDArrayFloat
+    ) -> UnivariateSpline:
+        """Fit polynomial spline"""
         spl = UnivariateSpline(voltages, current)
-        i_spl = spl(voltages)
-
-        Erev = self.find_Erev(linear_fit, spl)
-                
-        # fit Iinst-V with GHK current equation
-        E = math.exp(Erev/RTF_CONSTANT)
-        ghk_params = self.GHK_model.fit(voltages, current)
-        i_ghk = self.GHK_model.simulate(ghk_params, voltages)
+        return spl 
         
-    def get_ghk_perms(self, params: lmfit.Parameters):
-        # absolute permeabilities 
+    def fit_ghk(
+        self, voltages: NDArrayFloat, current: NDArrayFloat, Erev: float
+    ) -> lmfit.Parameters:
+        """
+        Fit instantaneous current-voltage relation 
+        """
+        # update reversal potential and thermodynamic exponent
+        self.GHK_model.rmp = Erev 
+        
+        # fit Iinst-V with GHK current equation
+        ghk_params = self.GHK_model.fit(voltages, current)
+        
+        return ghk_params 
+                
+    def get_ghk_perms(
+        self, params: lmfit.Parameters
+    ) -> Tuple[float, float, float]:
+        """Get absolute permeabilities from relative permeabilities"""        
         perms = self.GHK_model.get_all_permeabilities(params)
         P_K, P_Na = perms['K'], perms['Na']
         P_K_Na = P_K / P_Na 
         return P_K, P_Na, P_K_Na 
     
-    def run(self):
+    def run(self) -> Tuple[pd.DataFrame]:
         
         voltages, i_inst = self.get_Iinst()
         i_inst_cm = i_inst / self.data.params.loc['Cm']
         
-        # linear fits of i_inst and i_inst_cm against voltage using Chebyshev
-        linfit = np.polyfit(voltages, i_inst, deg=1)
-        linfit_cm = np.polyfit(voltages, i_inst_cm, deg=1)
-                        
-        self.Iinst_df = pd.DataFrame(
-            data={"pA" : i_inst, "pA/pF" : i_inst_cm}, index=voltages
-        )
+        self.Iinst_df = pd.DataFrame(data={"pA" : i_inst, "pA/pF" : i_inst_cm}, index=voltages)
+        
+        res: Dict[str, NDArrayFloat] = dict()
+        params: Dict[str, Dict[str, float]] = dict()
+        
+        for col in ['pA', 'pA/pF']:
+            current = self.Iinst_df.loc[:, col].values
 
+            # sort voltages (and corresponding current) in ascending order
+            voltages, current = multi_sort(zip(voltages, current))
+        
+            linfit = np.polyfit(voltages, current, deg=1)
+            i_ohmic = np.polyval(linfit, voltages)
+            
+            # simulate current with polynomial spline 
+            spl = self.fit_spl(voltages, current)
+            Erev = self.find_Erev(linfit, spl)
+            i_spl = spl(voltages)
+            
+            # simulate GHK current 
+            ghk_params = self.fit_ghk(voltages, current, Erev)
+            i_ghk = self.GHK_model.simulate(ghk_params, voltages)
+            
+            # save simulated current 
+            res[f'ohmic_{col}'] = i_ohmic
+            res[f'spl_{col}'] = i_spl
+            res[f'ghk_{col}'] = i_ghk
+            
+            # save fit parameters 
+            pars = self.GHK_model.get_all_permeabilities(ghk_params)
+            pars.update({'Erev' : Erev, 'ohmic_y0' : linfit[0], 
+                        'ohmic_gamma' : linfit[1]})
+            params[col] = pars 
+            
+        # simulated current 
+        IV_sim = pd.DataFrame.from_dict(res)
+        
+        # fitted GHK permeabilities 
+        IV_params = pd.DataFrame.from_dict(params)
+        
+        return IV_sim, IV_params 
+        
+    def plot_results(self, IV_sim: pd.DataFrame, IV_params: pd.DataFrame) -> None:
+        
+        voltages = self.Iinst_df.index.values 
+        plotter = PlotIV(self.data, self.GHK_model)
+        
+        
 
-    def plot_results(
-        self, voltages: NDArrayFloat, current: NDArrayFloat,
-        linfit: NDArrayFloat, 
-    ) -> None:
-        
-        
-        
-        spl = UnivariateSpline(voltages, current)
-        i_spl = spl(voltages)
-        
-        
 
     def extract_data(self, key: str) -> None:
         return super().extract_data(key)
@@ -1157,17 +1211,16 @@ class PlotIV(AbstractPlotter):
         # nbins for yticks
         ax.locator_params(axis='y', nbins=4)
         
-
-    def plot(self, voltages: NDArrayFloat, i_inst: NDArrayFloat, 
-            linfit: lmfit.Parameters, linfit_cm: lmfit.Parameters
-        ) -> Tuple[pd.DataFrame]:
+    def plot(self, IV_data: pd.DataFrame, IV_sim: pd.DataFrame, IV_params: pd.DataFrame):
         
-        res = self.add_IV(self.axs[0], linfit, voltages, i_inst)
-        res_cm = self.add_IV(self.axs[1], linfit_cm, voltages, i_inst)
-
-        res = pd.DataFrame.from_dict(res)
-        res_cm = pd.DataFrame.from_dict(res_cm)
-        return res, res_cm 
+        voltages = IV_data.index.values 
+        for i, col in enumerate(IV_data.columns):
+            if i > len(self.axs): break 
+            self.add_IV(self.axs[i], voltages, IV_data[col], IV_sim[f'ghk_{col}'],
+                        IV_sim[f'ohmic_{col}'], IV_sim[f'spl_{col}'])
+            
+        # TO DO 
+        # convert IV_params to something compatible with self.add_legend
 
 # ---------------------------------------------------------------------------- #
 #                            Pseudo-leak subtraction                           #
