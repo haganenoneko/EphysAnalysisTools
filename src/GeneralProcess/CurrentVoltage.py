@@ -10,7 +10,7 @@ from dataclasses import dataclass
 
 from scipy.interpolate import UnivariateSpline
 
-from typing import Dict, List, Tuple, Any
+from typing import Dict, List, Tuple
 
 import lmfit
 import logging
@@ -292,7 +292,25 @@ class PlotIV(AbstractPlotter):
         ghk_kw=dict(c='r', lw=2),
         data_kw=dict(marker='o', ls='none', ms=6, c='k'),
     ):
+        """Plot current-voltage data and simulations
 
+        :param IV_data: Instantaneous current for different conditions in columns and voltages for each condition in rows. When called from `AnalyzeIV.plot_results()`, the columns are raw current (`pA`) and current density (`pA/pF`)
+        :type IV_data: pd.DataFrame
+        :param IV_sim: Simulated current with simulations in columns and voltages in rows. The column names should be `[model name]_[condition]`, e.g. `ghk_pA`
+        :type IV_sim: pd.DataFrame
+        :param IV_params: Fit parameters used to generate `IV_sim`. When called from `AnalyzeIV`, these include GHK permeabilities (e.g. `Na`, `K`) in the rows and conditions in the columns
+        :type IV_params: pd.DataFrame
+        :param ref_ion: Reference ion for computing relative GHK permeabilities, defaults to 'K'
+        :type ref_ion: str, optional
+        :param ohmic_kw: Appearance of Ohmic fits, defaults to dict(lw=2, ls='--', c='blue')
+        :type ohmic_kw: Dict[str, Any], optional
+        :param spl_kw: Appearance of spline fits, defaults to dict(ls=':', c='g', lw=2.5)
+        :type spl_kw: Dict[str, Any], optional
+        :param ghk_kw: Appearance of GHK fits, defaults to dict(c='r', lw=2)
+        :type ghk_kw: Dict[str, Any], optional
+        :param data_kw: Appearance of data, defaults to dict(marker='o', ls='none', ms=6, c='k')
+        :type data_kw: Dict[str, Any], optional
+        """
         volts = IV_data.index.values
         self.format_axes()
 

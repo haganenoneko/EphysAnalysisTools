@@ -3,14 +3,13 @@
 # This software is released under the MIT License.
 # https://opensource.org/licenses/MIT
 
-import glob
 import math
-import os
-from multiprocessing import Value
+import re
+import lmfit
+import logging
 
 from abc import ABC, abstractmethod
-from typing import Callable, Tuple, List, Dict, Any, Union
-import logging
+from typing import Callable, List, Dict, Any, Union, Tuple
 
 import numpy as np
 import pandas as pd
@@ -19,14 +18,11 @@ import matplotlib.pyplot as plt
 import matplotlib.patheffects as pe
 from matplotlib.backends.backend_pdf import PdfPages
 
-from scipy.interpolate import UnivariateSpline
-from scipy.stats import pearsonr, sem
-
-import lmfit
+from scipy.stats import pearsonr
 
 from dataclasses import dataclass
 
-from GeneralProcess.Base import NDArrayFloat, CleanlyDropNaNs
+from GeneralProcess.Base import KwDict, NDArrayFloat, CleanlyDropNaNs, UnsupportedError, multi_sort
 from GeneralProcess.Interfaces import Recording, AbstractPlotter, AbstractAnalyzer
 
 # --------------------------------- Constants -------------------------------- #
@@ -133,29 +129,32 @@ class AbstractGHKCurrent(AbstractCurrentModel):
     """
 
     def __init__(
-        self, ion_set: Dict[str, List[List[float]]], RMP: float=0.
+        self, ion_set: Dict[str, List[List[float]]], RMP: float = 0.
     ) -> None:
 
         self.ion_set = ion_set
         self.ion_deltas()
-        
-        self._RMP = RMP 
+
+        self._RMP = RMP
         self._eRMP = math.exp(RMP / RTF_CONSTANT)
 
     # --------------- Reversal potential and thermodynamic exponent -------------- #
     @property
     def rmp(self):
         return self._RMP
-    @rmp.setter 
+
+    @rmp.setter
     def rmp(self, new_rmp: float):
-        self._RMP = new_rmp 
+        self._RMP = new_rmp
         try:
             self._eRMP = math.exp(new_rmp / RTF_CONSTANT)
         except ValueError:
-            raise ValueError(f"Failed to compute thermodynamic exponent with given value of resting membrane potential: < {new_rmp} >")            
+            raise ValueError(
+                f"Failed to compute thermodynamic exponent with given value of resting membrane potential: < {new_rmp} >")
+
     @rmp.getter
     def rmp(self) -> float: return self._RMP
-    
+
     def ion_deltas(self) -> None:
         """Compute difference (internal - external) concentrations for each ion"""
         self.ion_deltas = {
@@ -264,9 +263,12 @@ class BionicGHKCurrent(AbstractGHKCurrent):
         K = self.ion_set['K']
         Na = self.ion_set['Na']
         E = self._eRMP
+
         return P_K*((E*K[0] - K[1]) / (Na[1] - E*Na[0]))
 
-    def get_all_permeabilities(self, params: lmfit.Parameters) -> Dict[str, float]:
+    def get_all_permeabilities(
+        self, params: lmfit.Parameters
+    ) -> Dict[str, float]:
 
         K = self.ion_set['K']
         Na = self.ion_set['Na']
@@ -343,7 +345,7 @@ class LocateLeak(ABC):
         self.N = int(df.shape[1]/2)
 
     @staticmethod
-    def _downsample(data: pd.DataFrame, factor: int) -> pd.DataFrame
+    def _downsample(data: pd.DataFrame, factor: int) -> pd.DataFrame:
         if factor < 1:
             return data
         return data.iloc[::factor, :]
@@ -442,7 +444,8 @@ class GUILeakLocator(LocateLeak):
         raise NotImplementedError(f"GUILeakLocator is not implemented yet")
 
     def find(self) -> pd.DataFrame:
-        return
+        raise NotImplementedError(
+            "VaryingStepLeakLocator is not implemented yet")
 
 
 class VaryingStepLeakLocator(LocateLeak):
@@ -454,21 +457,255 @@ class VaryingStepLeakLocator(LocateLeak):
     """
 
     def __init__(
-        self, df: pd.DataFrame, epoch_times: List[List[int]],
-        epoch_levels: List[List[float]]
+        self, df: pd.DataFrame, epoch_times: List[List[int]], khz: int
     ) -> None:
-        self.df = df
-        self.epoch_times = epoch_times
-        self.epoch_levels = epoch_levels
+        self._df = df
+        self._khz = khz
+        self._epochs = epoch_times
 
-        raise NotImplementedError(
-            "VaryingStepLeakLocator is not implemented yet")
+        self._N = int(df.shape[1]/2)
+
+    @staticmethod
+    def _validate_method(mode: str, first_length: int) -> str:
+        """Check that `mode` specifies a supported method of selecting epoch for leak subtraction
+
+        :param mode: method of selecting epoch for leak subtraction
+        :type mode: str
+        :param first_length: number of epochs in first sweep
+        :type first_length: int
+        :raises UnsupportedError: if `mode` is unsupported
+        :raises ValueError: if a numeric `mode` is given, but exceeds `first_length`
+        :return: supported `mode`
+        :rtype: str
+        """
+
+        if mode in ['first', 'last', 'min', 'max']:
+            return mode
+
+        # more general pattern
+        # mtch = re.search(r"([a-z]+)([1-9]+)", mode)
+
+        mtch = re.search(r"(n|top)([1-9]+)", mode)
+
+        if not mtch:
+            raise UnsupportedError(
+                mode, ['first', 'last', 'min', 'max', 'num#', 'top#'])
+
+        # select the n-th epoch
+        if mtch.group(0) == 'n':
+            if int(mtch.group(1)) >= first_length:
+                raise ValueError(
+                    f"An integer argument to `mode` indicates that the `mode`-th epoch should be selected for leak subtraction, but only {first_length} epochs are present in the first sweep.")
+
+            return mode
+
+        # select the top n epochs with largest voltage variation
+        if mtch.group(0) == 'top':
+            n = int(mtch.group(1))
+            if n >= first_length:
+                logging.warning(
+                    f"`{mode}` selects `{n}` with the greatest voltage variation between sweeps, but the first sweep only contains {first_length} epochs. `{mode}` will thus be truncated to {first_length}")
+
+                return f"top{first_length}"
+
+            return mode
+
+    @staticmethod
+    def _validate_found_epochs(inds: List[int], dvs: List[float]) -> bool:
+
+        try:
+            assert len(inds) == len(dvs)
+        except AssertionError:
+            raise ValueError(
+                f"Unequal number of identified epochs and corresponding maximum voltage differences:\nEpoch indices: {inds:>8}\nMaximum voltage differences: {dvs:>8}")
+
+        for i, ind in enumerate(inds):
+            try:
+                assert isinstance(ind, int)
+            except AssertionError:
+                raise TypeError(f"{i}-th epoch is not an integer: {ind}")
+
+            try:
+                assert isinstance(dvs[i], float)
+            except AssertionError:
+                raise TypeError(
+                    f"{i}-th maximum voltage difference is not a float: {dvs[i]}")
+
+        return True
+
+    @staticmethod
+    def _select_step(
+        inds: List[int], dvs: List[float], mode: str
+    ) -> Tuple[int, float]:
+
+        if len(inds) == 1 or mode == 'first':
+            return inds[0], dvs[0]
+        elif mode == 'last':
+            return inds[-1], dvs[-1]
+        elif mode == 'min':
+            return inds[np.argmin(dvs)], min(dvs)
+        elif mode == 'max':
+            return inds[np.argmax(dvs)], max(dvs)
+
+        n = int(mode[1:])
+        if 'top' in mode:
+            dvs, inds = multi_sort([dvs, inds])
+            return inds[:n], dvs[:n]
+        else:
+            return inds[n], dvs[n]
+
+    def _find_step(
+        self, w: int = 10, dt: int = 100, dv_min: float = 5.,
+        n_min: int = 2, mode: str = 'first'
+    ) -> Union[int, List[int]]:
+        """Find index of epoch that varies in voltage between sweeps.
+
+        :param w: initial offset (in units of `1/self._khz`) added to each epoch onset times when selecting intervals for sweep-to-sweep comparison, defaults to 10
+        :type w: int, optional
+        :param dt: duration (in units of `1/self._khz`) of intervals selected for sweep-to-sweep comparison, defaults to 100
+        :type dt: int, optional
+        :param dv_min: minimum difference in voltage between `(i+1)`-th and `i`-th sweeps at the selected epoch, defaults to 5.
+        :type dv_min: float, optional
+        :param n_min: minimum number of sweeps in a recording for which the difference in voltage at the selected epoch exceeds `dv_min`, defaults to None
+        :type n_min: int, optional
+        :param mode: how epochs will be selected. See `_select_step()` for details, defaults to 'first'
+        :type mode: str, optional
+        :raises UnsupportedError: if `mode` is not supported. See `_select_step()` for details
+        :raises RuntimeError: if epochs that are found via the `dv_min` condition do not pass type-based validation. See `_validate_found_epochs()` for details.
+        :return: index of selected epoch
+        :rtype: int
+        """
+
+        df = self._df
+        epochs = self._epochs
+        n_min = min(n_min, self._N)
+
+        # index of first sweep
+        first = min(list(epochs.keys()))
+
+        mode = self._validate_method(mode, len(epochs[first]))
+
+        # endpoints for selections
+        dt = (dt + w)*self._khz
+        w *= self._khz
+
+        # index of first pulse with varying voltage
+        target = []
+        target_dv = []
+
+        for sweep in epochs.values():
+            if target and mode == 'first':
+                break
+
+            for i, t in enumerate(sweep):
+                if t not in epochs[first]:
+                    break
+
+                volts = df.iloc[(t + w): (t + dt), self._N:]\
+                    .mean(axis=0).dropna()
+
+                if volts.shape[0] < n_min:
+                    continue
+
+                dvolts = (volts.iloc[1:] - volts.iloc[:-1]).abs()
+
+                if (dvolts >= dv_min).all():
+                    target.append(i)
+                    target_dv.append(dvolts.max())
+
+                    if mode == 'first':
+                        break
+
+        try:
+            self._validate_found_epochs(target, target_dv)
+        except (ValueError, TypeError) as e:
+            logging.error(e)
+            raise RuntimeError(
+                f"Failed to find suitable epochs for pseudoleak subtraction.")
+
+        # select epoch according to 'mode'
+        target, target_dv = self._select_step(target, target_dv, mode)
+        logging.info(
+            f"The {target}-th epoch was selected for pseudo-leak subtraction. Between sweeps, the maximum difference in voltage at the {target}-th epoch is {target_dv}")
+
+        return target
+
+    def _extract_current_voltage(
+        self, ind: int, w: int = 10, dt: int = 50
+    ) -> NDArrayFloat:
+        """Extract voltages and (time average of) current at the `ind`-th epoch
+
+        :param ind: index of epoch
+        :type ind: int
+        :param w: offset to add to the epoch onset time when selecting interval of data 
+        :type w: int
+        :param dt: duration of interval to select
+        :type dt: int
+        :raises IndexError: voltages are taken as the 10-th row of the selection.
+        :return: current and voltages at the `ind`-th epoch as `numpy` arrays
+        :rtype: Tuple[pd.DataFrame, pd.DataFrame]
+        """
+
+        # endpoints for selections
+        dt = (w + dt) * self._khz
+        w *= self._khz
+
+        t0 = self._epochs[1][ind]
+        df_sel = self._df.iloc[(t0 + w):(t0 + dt), :]
+
+        # round voltages to nearest 5
+        # current = df_sel.iloc[:, :self._N]
+        # voltage = (df_sel.iloc[:, self._N:] / 5).round().astype(int) * 5
+        # return voltage, current
+
+        return df_sel.values
 
     def find(
-        self, min_dV: float = 50.,
-        rank_metric: Callable[[NDArrayFloat], NDArrayFloat] = None
+        self, find_kw: KwDict = {}, extract_kw: KwDict = {},
+        agg_func: Callable[[NDArrayFloat], float] = np.mean
     ) -> pd.DataFrame:
-        return
+        """Find current/voltage to use for leak subtraction from conditions on epochs in the recording protocol
+
+        :param find_kw: keyword arguments to `_find_step`. The `mode` keyword argument determines how epochs are chosen. See `_find_step` and `validate_found_epochs` for details, defaults to {}
+        :type find_kw: KwDict, optional
+        :param extract_kw: keyword arguments to `_extract_current_voltage`, which extracts a selection of the original data. The beginning and width of the selection can be controlled by specifying keyword arguments `w` and `dt`, defaults to {}
+        :type extract_kw: KwDict, optional
+        :param agg_func: function that converts `pd.DataFrame`s from `_extract_current_voltage` to scalars, defaults to np.mean
+        :type agg_func: Callable[[NDArrayFloat], float], optional
+        :raises e: if aggregation fails with `agg_func` and additionally fails upon using the fallback `np.mean`
+        :return: `pd.DataFrame` with voltage and current in the first and second columns, respectively
+        :rtype: pd.DataFrame
+        """
+        target = self._find_step(**find_kw)
+
+        if isinstance(target, list):
+            inds = [0]
+            inds.extend(target)
+        else:
+            inds = [0, target]
+
+        leak_data = np.zeros((len(inds), 2*self._N))
+        for i in inds:
+            X = self._extract_current_voltage(i, **extract_kw)
+
+            try:
+                leak_data[i, :] = agg_func(X, axis=0)
+            except (RuntimeError, ValueError, TypeError):
+                logging.warning(
+                    f"Failed to apply provided function `{agg_func}` to aggregate the data. Falling back to `np.mean`")
+
+            try:
+                leak_data[i, :] = np.mean(X, axis=0)
+            except (RuntimeError, ValueError, TypeError) as e:
+                raise e
+
+        # swap voltage and current columns
+        out = pd.DataFrame(leak_data)
+
+        new_order = np.arange(0, out.shape[1], dtype=int)
+        new_order[:self._N] += self._N
+        new_order[self._N:] -= self._N
+        return out.iloc[:, new_order]
 
 # ---------------------------------------------------------------------------- #
 #                              Subtraction methods                             #
@@ -549,14 +786,27 @@ class LeakSubtractor(AbstractAnalyzer):
         self.target: pd.DataFrame = None
         self.res: LeakSubtractResults = None
 
-    def set_method(self, method: str, RMP: float = None,
+    def set_method(
+        self, method: str, RMP: float = None,
         ion_set: Dict[str, List[float]] = None,
-                   permeant_ions=['Na', 'K', 'Cl']
-                   ) -> None:
+        permeant_ions=['Na', 'K', 'Cl']
+    ) -> None:
+        """Set method (aka 'model') to use for fitting leak current/voltage.
+
+        :param method: one of 'ohmic' or 'ghk#', where # is an integer between 1 and 3, inclusive. 
+        :type method: str
+        :param RMP: resting membrane potential. Must be specified to use a GHK model. Optional otherwise. Defaults to `None`
+        :type RMP: float, optional
+        :param ion_set: dictionary of `[internal, external]` ion concentrations with ion names as keys, defaults to None
+        :type ion_set: Dict[str, List[float]], optional
+        :param permeant_ions: list of permeant ions. That is, the ions that will be used for fitting GHK models, defaults to ['Na', 'K', 'Cl']
+        :type permeant_ions: list, optional
+        :raises ValueError: if `method` is unsupported
+        :raises ValueError: if `RMP` is not specified for a GHK model
+        """
 
         if method not in ['ohmic', 'ghk2', 'ghk3', 'ghk']:
-            raise ValueError(
-                f"Leak current model must be one of ['ohmic', 'ghk2', 'ghk3', 'ghk'], not {method}.")
+            raise UnsupportedError(method, ['ohmic', 'ghk2', 'ghk3', 'ghk'])
 
         if method == 'ohmic':
             self.model = OhmicCurrent
@@ -579,13 +829,19 @@ class LeakSubtractor(AbstractAnalyzer):
         return
 
     def set_locator(self, locator: str, **kwargs):
+        """Set method used to find leak current/voltage
+
+        :param locator: one of 'ramp', 'GUI', or 'step'
+        :type locator: str
+        :raises UnsupportedError: unsupported `locator` argument
+        :raises AttributeError: if `ramp` is specified, but the data (`Recording` object) does not have the `ramp_startend` attribute
+        """
 
         if locator not in ['ramp', 'GUI', 'step']:
-            raise ValueError(
-                f"Locator method must be one of ['ramp', 'GUI', 'step'], not {locator}.")
+            raise UnsupportedError(locator, ['ramp', 'GUI', 'step'])
 
-        if locator == 'ramp'
-           if not hasattr(self.data, 'ramp_startend'):
+        if locator == 'ramp':
+            if not hasattr(self.data, 'ramp_startend'):
                 raise AttributeError(
                     f"Data does not have attribute 'ramp_startend'. Perhaps try using a different locator method (using {locator}).")
 
@@ -617,7 +873,7 @@ class LeakSubtractor(AbstractAnalyzer):
         for i in range(N):
             sweep = self.target.iloc[:, [i, N+i]].dropna().values
 
-            res = self.model.fit(sweep[:, 1], sweep[:,0], **fit_kwargs)
+            res = self.model.fit(sweep[:, 1], sweep[:, 0], **fit_kwargs)
             logging.info(repr(self.model))
             logging.info(f"Fit status for {i}-th trace: {res.message}")
 
@@ -627,9 +883,9 @@ class LeakSubtractor(AbstractAnalyzer):
             fitted.append(leak_i)
 
             rvals_fitVolts[i] = pearsonr(sweep[:, 1], leak_i)[0]
-            rvals_dataVolts[i] = pearsonr(sweep[:, 1], sweep[:,0])[0]
+            rvals_dataVolts[i] = pearsonr(sweep[:, 1], sweep[:, 0])[0]
 
-            subtracted.iloc[:, i] -= leak_i 
+            subtracted.iloc[:, i] -= leak_i
 
         self.res = LeakSubtractResults(
             fitted, leak_params, rvals_fitVolts,
@@ -649,9 +905,9 @@ class LeakSubtractor(AbstractAnalyzer):
         )
 
     def run(self, model: str, locator: str, show=False,
-        model_kwargs: dict={}, locator_kwargs: dict={},
-        find_kwargs: dict={}, fit_kwargs: dict={},
-            plot_kwargs: dict={}, check_kwargs: dict={}
+            model_kwargs: dict = {}, locator_kwargs: dict = {},
+            find_kwargs: dict = {}, fit_kwargs: dict = {},
+            plot_kwargs: dict = {}, check_kwargs: dict = {}
             ):
         self.set_method(model, **model_kwargs)
         self.set_locator(locator, **locator_kwargs)
@@ -682,7 +938,7 @@ class PlotOhmic(AbstractPlotter):
 
     def __init__(
         self, data: Recording, results: LeakSubtractResults,
-        save_path: str, show=False, downsample: int =5
+        save_path: str, show=False, downsample: int = 5
     ) -> None:
         self.fig: plt.figure = None
         self.axs: List[plt.Axes] = None
@@ -697,7 +953,7 @@ class PlotOhmic(AbstractPlotter):
         fig = plt.figure(figsize=(12, 6))
         gs = fig.add_gridspec(2, 3)
 
-        axs = [gs[0, 0], gs[0,1], gs[0,2], gs[1,:]]
+        axs = [gs[0, 0], gs[0, 1], gs[0, 2], gs[1, :]]
 
         self.fig = fig
         self.axs = [fig.add_subplot(g) for g in axs]
@@ -768,13 +1024,13 @@ class PlotOhmic(AbstractPlotter):
         times -= times[0]
 
         # plot pre-subtracted current
-        ax3.plot(times[::down], results.subtracted.iloc[::down, :N], 
-                marker='o', markersize=3, markevery=5, ls='none',
+        ax3.plot(times[::down], results.subtracted.iloc[::down, :N],
+                 marker='o', markersize=3, markevery=5, ls='none',
                  c='gray', label="Original")
 
         # plot subtracted current
         ax3.plot(
-            times[::down], self.ramp_df.iloc[::down, :N], 
+            times[::down], self.ramp_df.iloc[::down, :N],
             lw=2, c='r', label="Subtracted")
 
         # plot leak parameters
@@ -790,11 +1046,12 @@ class PlotOhmic(AbstractPlotter):
                      lw=1.5, c='blue', ls=':', label="Fit")
         elif isinstance(fitted, list):
             for i, fit in enumerate(fitted):
-                times = subtracted.iloc[::down, i].dropna().index                
+                times = subtracted.iloc[::down, i].dropna().index
                 label = "Fit" if i == 0 else None
                 ax3.plot(times, fit[::down], label=label, **kwargs)
         else:
-            raise TypeError(f"Fitted data should be a Numpy array or list of numpy arrays, not {type(fitted)}")
+            raise TypeError(
+                f"Fitted data should be a Numpy array or list of numpy arrays, not {type(fitted)}")
 
         self.add_legend(N)
         self.format_axes()
@@ -817,7 +1074,7 @@ class PlotGHK(AbstractPlotter):
     def __init__(
         self, data: Recording, results: LeakSubtractResults,
         model: AbstractGHKCurrent, save_path: str,
-        show=False, downsample: int =5
+        show=False, downsample: int = 5
     ) -> None:
         self.fig: plt.figure = None
         self.axs: List[plt.Axes] = None
@@ -883,40 +1140,6 @@ class PlotGHK(AbstractPlotter):
             self.axs[0].plot(xpos, perm, label=f"$P_{{name}}$",
                              c=get_clr(i), **kwargs)
 
-    def plot(self, res: LeakSubtractResults) -> None:
-
-        down = self.downsample
-        subtracted = res.subtracted
-        N = int(subtracted.shape[1]/2)
-
-        times = subtracted.index[::down]
-        times -= times[0]
-
-        ax2 = self.axs[2]
-        ax2.plot(times, subtracted.iloc[::down, :N], lw=2, alpha=0.5, 
-                 c='r', label="Original")
-
-        fitted = res.fitted
-        line_border = [pe.Stroke(linewidth=5, foreground='k'), pe.Normal()]
-        kwargs = dict(lw=2, c='yellow', alpha=0.8,
-                      path_effects=line_border, label="Fit")
-
-        if isinstance(fitted, np.ndarray):
-            ax2.plot(times, np.transpose(fitted), **kwargs)
-        elif isinstance(fitted, list):
-            for i, fit in enumerate(fitted):
-                times = subtracted.iloc[:, i].dropna().values()
-                ax2.plot(times[::down], fit[::down], **kwargs)                                    
-        else:
-            raise TypeError(f"Fitted data should be a Numpy array or list of numpy arrays, not {type(fitted)}")
-
-        # plot subtracted current
-        ax2.plot(times[::5], subtracted.iloc[::5, :N], lw=2, alpha=0.5, 
-                 c='lightblue', label="Subtracted")
-
-        self.add_legend(N)
-        self.format_axes(N)
-
     def format_axes(self, N: int) -> None:
 
         ax0, ax1, ax2 = self.axs
@@ -963,163 +1186,37 @@ class PlotGHK(AbstractPlotter):
         ax2.legend([h[0], h[N], h[-1]], [l[0], l[N], l[-1]],
                    loc='lower center', ncol=3)
 
+    def plot(self, res: LeakSubtractResults) -> None:
 
-        
-# ---------------------------------------------------------------------------- #
-#                            Pseudo-leak subtraction                           #
-# ---------------------------------------------------------------------------- #
+        down = self.downsample
+        subtracted = res.subtracted
+        N = int(subtracted.shape[1]/2)
 
-def PseudoLeakSubtraction(self, original, epochs=None,
-                          use_tails=True, tail_threshold=20, method='ohmic', plot_results=False):
-    """
-    Leak subtraction based on instantaneous current and holding current. Only applicable for activation protocols. 
-    `original` = original dataframe 
-    `epochs` = dictionary of epochs, {sweep # : [epoch1, epoch2, ...]} 
-    `use_tails` = whether to use tail currents (follow immediately after activation)
-    `method` = 'ohmic' or 'ghk' 
+        times = subtracted.index[::down]
+        times -= times[0]
 
-    Returns leak-subtracted dataframe 
-    """
-    if epochs is None:
-        epochs = self.epochs
+        ax2 = self.axs[2]
+        ax2.plot(times, subtracted.iloc[::down, :N], lw=2, alpha=0.5,
+                 c='r', label="Original")
 
-    if self.N is None:
-        self.N = int(original.shape[1]/2)
+        fitted = res.fitted
+        line_border = [pe.Stroke(linewidth=5, foreground='k'), pe.Normal()]
+        kwargs = dict(lw=2, c='yellow', alpha=0.8,
+                      path_effects=line_border, label="Fit")
 
-    khz = self.khz
-
-    # find index of first pulse with varying voltage
-    u = None
-    for k, v in epochs.items():
-
-        if u is not None:
-            break
-
-        for i, t in enumerate(v):
-
-            # skip if epoch is not in first sweep
-            if t not in epochs[1]:
-                break
-
-            # voltage at epoch `t` for all sweeps
-            volts = original.iloc[(t + 10*khz):(t + 110*khz), self.N:].mean(axis=0)
-
-            # check if difference between consecutive sweeps is at least 5 mV
-            if np.all(np.abs(volts.iloc[1:].values - volts.iloc[:-1].values) >= 5):
-                u = i
-                break
-
-    # voltage and current at onset of first varying-voltage pulse (activation)
-    t0 = epochs[1][u]
-    # select first 50ms, with 20ms offset
-    i_vary = original.iloc[(t0 + 20*khz):(t0 + 70*khz), :]
-    v_vary = [int(x/5)*5 for x in i_vary.iloc[10, self.N:]]
-    i_vary = i_vary.iloc[:, :self.N].mean(axis=0)
-
-    # voltage and current at holding potential
-    t0 = epochs[1][0]
-    # select last 50ms, with 100ms offset
-    i_hold = original.iloc[(t0 - 150*khz):(t0 - 100*khz), :]
-    v_hold = i_hold.iloc[10, self.N:].values
-    i_hold = i_hold.iloc[:, :self.N].mean(axis=0) 
-
-    if use_tails:
-        # select epoch that acts as upper bound of tail
-        t0 = epochs[1][u+2]
-
-        # check change in current in last 250ms of tail, w/ 20ms offset and 5ms avg
-        # if change is > tail_threshold, skip tails
-        dI_ss = original.iloc[(t0 - 270*khz):(t0 - 20*khz), :self.N].rolling(5*khz).mean().dropna()
-        dI_ss = (dI_ss.max(axis=0) - dI_ss.min(axis=0)).abs()
-
-        if (dI_ss <= tail_threshold).all():
-            # select last 50ms, with 50ms offset
-            i_tails = original.iloc[(t0 - 100*khz):(t0 - 50*khz), :]
-            v_tails = i_tails.iloc[10, self.N:].values
-            i_tails = i_tails.iloc[:, :self.N].mean(axis=0)
-
-            current = [i_hold, i_vary, i_tails]
-            volts = [v_hold, v_vary, v_tails]
+        if isinstance(fitted, np.ndarray):
+            ax2.plot(times, np.transpose(fitted), **kwargs)
+        elif isinstance(fitted, list):
+            for i, fit in enumerate(fitted):
+                times = subtracted.iloc[:, i].dropna().values()
+                ax2.plot(times[::down], fit[::down], **kwargs)
         else:
-            print("`use_tails=True`, but will not proceed, because change in current over last 500 (+20) ms is greater than 10pA")
-            print(dI_ss)
+            raise TypeError(
+                f"Fitted data should be a Numpy array or list of numpy arrays, not {type(fitted)}")
 
-            current = [i_hold, i_vary]
-            volts = [v_hold, v_vary]
-    else:
-        current = [i_hold, i_vary]
-        volts = [v_hold, v_vary]
+        # plot subtracted current
+        ax2.plot(times[::5], subtracted.iloc[::5, :N], lw=2, alpha=0.5,
+                 c='lightblue', label="Subtracted")
 
-    df_sub = original.copy()
-    leak_params = []
-    for i in range(self.N):
-
-        i_ = [x.iloc[i] for x in current]
-        v_ = [x[i] for x in volts]
-
-        # fit with ohmic leak equation
-        if method == 'ohmic':
-            self.fit_ohmic_leak(i_, v_)
-            leak_i = self.get_leak_current(original.iloc[:, self.N+i], self.popt, mode="ohmic")
-        # fit with ghk equation
-        elif method in ['double', 'triple']:
-            self.fit_ghk_leak(i_, v_, mode=method)
-            leak_i = self.get_leak_current(original.iloc[:, self.N+i], self.popt, mode=method)
-
-        # subtract from the entire trace
-        df_sub.iloc[:, i] -= leak_i 
-
-        leak_params.append(self.popt)
-
-    self.leak_params = leak_params
-    if plot_results:
-
-        f = plt.figure(figsize=(10, 6), constrained_layout=True)
-        gs = f.add_gridspec(nrows=2, ncols=3)
-        ax1 = f.add_subplot(gs[0, :])
-        ax2 = f.add_subplot(gs[1, 0])
-        ax3 = f.add_subplot(gs[1, 1])
-        ax4 = f.add_subplot(gs[1, 2])
-        # axs = [ax1, ax2, ax3, ax4]
-
-        # plot original and usbtracted current time courses
-        ax1.set_ylabel("Current (pA)")
-        ax1.set_xlabel("Time (ms)")
-        ax1.plot(original.iloc[:, :self.N], alpha=0.5, c='gray', lw=1)
-        ax1.plot(df_sub.iloc[:, :self.N], c='r', lw=2)
-
-        ax2.set_title(r"$\gamma$ (pS)")
-        ax3.set_title(r"$E_{\mathregular{leak}}$ (mV)")
-        for a in [ax2, ax3, ax4]:
-            a.set_xlabel("Sweep #")
-
-        # plot leak parameters
-        for j, ax in enumerate([ax2, ax3]):
-            # extract jth parameter for each sweep
-            p_j = [x[j] for x in leak_params]
-            ax.plot(range(1, self.N + 1), p_j, marker='o', ls='none', c='lightblue')
-
-        # plot current and voltage values used for fitting, along with fitted equations
-        for i in range(self.N):
-            clr = cmap(i/(self.N - 1))
-
-            i_ = [x.iloc[i] for x in current]
-            v_ = [x[i] for x in volts]
-
-            ax4.plot(v_, i_, marker='o', ls='none', c=clr)
-
-            # voltages for interpolation of fitted equations
-            v_ = range(min((min(v_), -150)), 50)
-
-            # plot interpolated fits on ax4
-            if method == 'ohmic':
-                leak_i = self.get_leak_current(v_, leak_params[i], mode="ohmic")
-            elif method in ['double', 'triple']:
-                leak_i = self.get_leak_current(v_, leak_params[i], mode=method)
-
-            ax4.plot(v_, leak_i, c=clr, lw=1, alpha=0.5, ls='--')
-
-        plt.show()
-        plt.close()
-
-    return df_sub
+        self.add_legend(N)
+        self.format_axes(N)

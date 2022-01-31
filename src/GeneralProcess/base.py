@@ -15,7 +15,9 @@ from typing import Callable, TypeVar
 
 import numpy.typing as npt
 
-# ------------------------------- Custom types ------------------------------- #
+# ---------------------------------------------------------------------------- #
+#                                 Custom types                                 #
+# ---------------------------------------------------------------------------- #
 
 TNumber = TypeVar('TNumber', int, float)
 
@@ -31,6 +33,14 @@ KwDict = Dict[str, Any]
 LOG_FORMAT = logging.Formatter(
     r"%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 )
+
+# ---------------------------------------------------------------------------- #
+#                               Custom exceptions                              #
+# ---------------------------------------------------------------------------- #
+
+class UnsupportedError(ValueError):
+    def __init__(self, arg: Any, supported: List[Any]) -> None:
+        super().__init__(f"{arg} is not a supported option \n {supported}")
 
 # ---------------------------------------------------------------------------- #
 #                                Logging methods                               #
