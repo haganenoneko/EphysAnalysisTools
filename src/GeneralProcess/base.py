@@ -3,21 +3,12 @@
 # This software is released under the MIT License.
 # https://opensource.org/licenses/MIT
 
-import matplotlib.pyplot as plt
-from matplotlib import rcParams
-from matplotlib.backends.backend_pdf import PdfPages
-
-import logging
-import glob
-import os
-import inspect
+import os, glob, logging, inspect 
 from datetime import datetime
 
 import numpy as np
 import pandas as pd
 from pathlib import Path
-
-from abc import ABC, abstractmethod
 
 from typing import Dict, Any, List, Union, Tuple
 from typing import Callable, TypeVar
@@ -40,102 +31,6 @@ KwDict = Dict[str, Any]
 LOG_FORMAT = logging.Formatter(
     r"%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 )
-
-# ---------------------------------------------------------------------------- #
-#                          Interfaces for data objects                         #
-# ---------------------------------------------------------------------------- #
-
-
-class Recording:
-    """Base class to hold data for individual recordings"""
-    raw_data: pd.DataFrame
-    name: str
-    params: pd.Series
-    epoch_intervals: Dict[int, List[int]]
-    attrs: Dict[str, Any]
-
-
-class RecordingWithLeak(Recording):
-    """Recordings that contain leak ramp steps"""
-    ramp_startend: List[int]
-
-
-class RecordingWithMemTest(RecordingWithLeak):
-    """Recordings that contain leak ramp and membrane test steps"""
-    mt_startend: List[int]
-
-# ---------------------------------------------------------------------------- #
-#                        Interfaces for analysis classes                       #
-# ---------------------------------------------------------------------------- #
-
-
-class AbstractAnalyzer(ABC):
-    @abstractmethod
-    def __init__(self, data: Recording) -> None:
-        pass
-
-    @abstractmethod
-    def run(self):
-        pass
-
-    @abstractmethod
-    def plot_results(self) -> None:
-        pass
-
-    @abstractmethod
-    def extract_data(self, key: str) -> None:
-        pass
-
-
-# ---------------------------------------------------------------------------- #
-#                     Interfaces for visualization classes                     #
-# ---------------------------------------------------------------------------- #
-
-def save_pdf(data: Recording, fig: plt.Figure) -> None:
-
-    if not hasattr(data, 'pdf'):
-        return
-
-    pdf = data.attrs['pdf']
-    pdf.savefig(fig, bbox_inches='tight')
-
-
-class AbstractPlotter(ABC):
-    """Abstract interface for plotting leak subtraction results"""
-
-    @abstractmethod
-    def __init__(self, data: Recording, show=False) -> None:
-        pass
-
-    @abstractmethod
-    def create_figure(self) -> None:
-        return
-
-    @abstractmethod
-    def add_labels(self) -> None:
-        return
-
-    @abstractmethod
-    def add_legend(self) -> None:
-        return
-
-    @abstractmethod
-    def format_axes(self) -> None:
-        return
-
-    @abstractmethod
-    def plot(self) -> None:
-        return
-
-    def save(
-        self, show: bool, save_path: str, data: Recording
-    ) -> None:
-        save_pdf(data, fig)
-        self.fig.savefig(save_path, dpi=300)
-
-        if show:
-            plt.show()
-        plt.close(self.fig)
 
 # ---------------------------------------------------------------------------- #
 #                                Logging methods                               #
@@ -176,7 +71,7 @@ def createLogger(
     log_path: str, overwrite=False,
     formatter=CallStackFormatter(), log_level="DEBUG"
 ) -> logging.Logger:
-
+    
     if log_path is None or not os.path.isdir(log_path):
         logging.info(
             f"{log_path} is an invalid directory. Logger instantiated without an output file."
@@ -241,12 +136,13 @@ def get_valid_paths(
 # ----------------------------- Simple functions ----------------------------- #
 
 def FallbackDecorator(
-    self, func, fallback
+    func, fallback, 
+    errors: Tuple[Exception] = (ValueError, RuntimeError, NotImplementedError)
 ):
     def wrapped(*args, **kwargs):
         try:
             func(*args, **kwargs)
-        except (RuntimeError, NotImplementedError):
+        except errors:
             fallback(*args, **kwargs)
     return wrapped
 
@@ -275,10 +171,6 @@ def pprint_dict(
     return delim.join(lst)
 
 
-def _get_df_shape(df: pd.DataFrame) -> Tuple[int, int]:
-    return df.shape
-
-
 def scalarTimesList(scalar: TNumber, lst: List[TNumber]) -> List[TNumber]:
     return [scalar*x for x in lst]
 
@@ -296,8 +188,6 @@ def extendListAsArray(lst: List[TNumber], dims: Tuple[int, ...]) -> Union[NDArra
                  mode='constant', constant_values=ext[-1])
 
     return ext
-
-# define a single exponential
 
 
 def exp1(

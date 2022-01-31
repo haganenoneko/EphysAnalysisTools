@@ -17,13 +17,7 @@ These are style guidelines (some are arbitrary) for personal use. They do not ne
   - underscores are only used if: 
     - more than 3 words in the class name
     - two or more similar classes, e.g. `Word_A`, `Word_B`
-- method names are in camel case, e.g. `wordWord`
-  - leading underscore when the method is only called by one other function, i.e. a private function, e.g. `self._wordWord`
-- class attributes names, e.g. `self._wordA_wordB_wordC`
-  - prefixed by two underscores
-  - fully lower case 
-  - words are delimited by underscores
-- class properties (`@property`) are like attributes, but are not prefixed by an underescore, e.g. `self.wordA_wordB_wordC`
+- 'private' methods and attributes are prefixed by leading underscores, e.g. `self._word`
 
 ## Architecture
 ### `@dataclass` for individual recordings
@@ -35,6 +29,6 @@ Each dataset consists of a CSV file and an ABF file. To hold these, we use the `
 ### static methods group logically related methods
 - `@staticmethod` is used abundantly to group methods that have a tight logical relationship
 ## Comments
-- comments are sparse and/or one-liners, unless 
+- comments are sparse and/or one-liners, unless con
 ### Multiprocessing 
 After files are selected and `AbstractRecording`s are instantiated for each selected file, 
